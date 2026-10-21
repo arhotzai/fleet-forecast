@@ -276,6 +276,71 @@ def _llp_table_html(df: pd.DataFrame, cap: int = 500) -> tuple[str, int]:
     return html, min(len(df), cap)
 
 
+def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reason",
+                  height: int = 360, cap: int = 1000) -> str:
+    """Render a dark, professional HTML table: sticky header, zebra rows, hover,
+    tabular numbers, and colour-coded 'Reason' pills."""
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return ""
+    d = df[cols].head(cap)
+    numeric = {c for c in cols if pd.api.types.is_numeric_dtype(d[c])}
+
+    def _lab(c):
+        return str(c).replace("_", " ")
+
+    def _numfmt(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return _fmt(v)
+        if pd.isna(f):
+            return ""
+        return f"{int(f):,}" if f == int(f) else f"{f:,.1f}"
+
+    def _badge(val):
+        s = _fmt(val)
+        if not s:
+            return ""
+        low = s.lower()
+        c = (C_HARD if "hard link" in low else
+             C_SOFT if "soft link" in low else
+             C_LLP if ("llp" in low or "replace" in low) else
+             C_LIMIT)
+        return (f'<span style="display:inline-block;padding:2px 11px;border-radius:999px;'
+                f'background:{c}22;color:{c};border:1px solid {c}66;font-size:.72rem;'
+                f'font-weight:600;white-space:nowrap">{s}</span>')
+
+    def _cell(c, v):
+        if c == reason_col:
+            return f"<td>{_badge(v)}</td>"
+        if c in numeric:
+            return f"<td class='num'>{_numfmt(v)}</td>"
+        return f"<td>{_fmt(v)}</td>"
+
+    head = "".join((f"<th class='num'>{_lab(c)}</th>" if c in numeric else f"<th>{_lab(c)}</th>")
+                   for c in cols)
+    body = "".join("<tr>" + "".join(_cell(c, r[c]) for c in cols) + "</tr>"
+                   for _, r in d.iterrows())
+    style = ("<style>"
+             ".ff-tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:.82rem;"
+             "color:#E6EAF2;white-space:nowrap}"
+             ".ff-tbl th{text-align:left;color:#9aa6bd;font-weight:700;padding:11px 16px;"
+             "text-transform:uppercase;letter-spacing:.5px;font-size:.68rem;"
+             "background:linear-gradient(180deg,#141d30,#0f1726);"
+             "border-bottom:1px solid #2b3550;position:sticky;top:0;z-index:1}"
+             ".ff-tbl td{padding:9px 16px;border-bottom:1px solid #1a2130}"
+             ".ff-tbl tbody tr:nth-child(even) td{background:rgba(255,255,255,.016)}"
+             ".ff-tbl tbody tr:hover td{background:rgba(45,127,249,.10)}"
+             ".ff-tbl td.num,.ff-tbl th.num{text-align:right;font-variant-numeric:tabular-nums}"
+             ".ff-tbl tbody tr:first-child td{border-top:0}"
+             "</style>")
+    return (style + f'<div style="max-height:{height}px;overflow:auto;border:1px solid #273046;'
+            f'border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.35)">\n'
+            f'<table class="ff-tbl"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div>')
+
+
 st.markdown(
     '<div class="kpi-row">'
     + _tile(f"{_n_ac}", "Aircraft", "in fleet", ACCENT)
@@ -285,11 +350,11 @@ st.markdown(
     + _tile(f"{_n_llp:,}", "LLP replacements", "life-limited parts", C_LLP)
     + '</div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["🤖 Ask Claude", "📅 SV Calendar", "🗓 Event Log", "📊 SV Dashboard",
+tabs = st.tabs(["🤖 Ask Claude", "📊 SV Dashboard", "📅 SV Calendar", "🗓 Event Log",
                 "🔧 LLP Status", "✈️ Aircraft Detail", "⬇ Export", "⚠️ Data Notes"])
 
 # ── SV Calendar (SV_PLAN_v1) ──────────────────────────────────
-with tabs[1]:
+with tabs[2]:
     st.subheader("Shop-visit calendar — month × aircraft")
     v1 = proj.sv_plan_v1
     if v1 is None or v1.empty:
@@ -308,7 +373,7 @@ with tabs[1]:
         st.dataframe(_blank(view), use_container_width=True, hide_index=True, height=500)
 
 # ── Event Log ─────────────────────────────────────────────────
-with tabs[2]:
+with tabs[3]:
     st.subheader("Projected shop-visit / replacement events")
     if events.empty:
         st.info("No events projected.")
@@ -328,11 +393,15 @@ with tabs[2]:
         if tails:
             f = f[f["Tail"].isin(tails)]
         disp = f.copy()
-        disp["Date"] = pd.to_datetime(disp["Date"]).dt.strftime("%b %Y")
-        st.caption(f"{len(f):,} events")
-        st.dataframe(_cols(disp, ["Date", "Tail", "Position", "Unit_ID", "Unit_Type",
-                                  "Event", "Driver", "SLSV_at_SV", "Reason"]),
-                     use_container_width=True, hide_index=True, height=480)
+        disp["Date"] = pd.to_datetime(disp["Date"]).dt.strftime("%d %b %Y")
+        note = f"{len(f):,} events"
+        if len(f) > 1000:
+            note += "  ·  showing the first 1,000 — use the CSV for the full list"
+        st.caption(note)
+        st.markdown(_pretty_table(disp, ["Date", "Tail", "Position", "Unit_ID", "Unit_Type",
+                                         "Event", "Driver", "SLSV_at_SV", "Reason"], height=520),
+                    unsafe_allow_html=True)
+        st.write("")
         st.download_button("⬇ Download event log (CSV)", events.to_csv(index=False).encode(),
                            "event_log.csv", "text/csv")
 
@@ -345,7 +414,7 @@ TRIG_LABEL = {"LIMIT": "Reached limit", "HARD_LINK": "Hard link",
 _TRIG_COLORS_F = {"Reached limit": C_LIMIT, "Hard link": C_HARD,
                   "Soft link": C_SOFT, "LLP replacement": C_LLP}
 
-with tabs[3]:
+with tabs[1]:
     st.subheader("SV Dashboard — upcoming events by type")
     if events.empty:
         st.info("No events.")
@@ -436,9 +505,10 @@ with tabs[3]:
 
             st.markdown("**Upcoming occurrences**")
             disp = sel.sort_values("Date")
-            disp = disp.assign(Date=disp["Date"].dt.strftime("%b %Y"))
-            st.dataframe(_cols(disp, ["Date", "Tail", "Position", "Unit_ID", "Event", "Reason"]),
-                         use_container_width=True, hide_index=True, height=320)
+            disp = disp.assign(Due=disp["Date"].dt.strftime("%d %b %Y"))
+            st.markdown(_pretty_table(disp, ["Due", "Tail", "Position", "Unit_ID", "Event", "Reason"],
+                                      height=360), unsafe_allow_html=True)
+            st.write("")
             st.download_button("⬇ Download these events (CSV)", sel.to_csv(index=False).encode(),
                                "sv_upcoming.csv", "text/csv")
         else:
@@ -508,10 +578,12 @@ with tabs[5]:
             if sub.empty:
                 st.info("No projected events for this aircraft.")
             else:
-                sub["Date"] = pd.to_datetime(sub["Date"]).dt.strftime("%b %Y")
+                sub["Date"] = pd.to_datetime(sub["Date"]).dt.strftime("%d %b %Y")
                 st.caption(f"{len(sub)} projected events for {tail}.")
-                st.dataframe(_cols(sub, ["Date", "Position", "Unit_ID", "Event", "Driver", "SLSV_at_SV", "Reason"]),
-                             use_container_width=True, hide_index=True, height=460)
+                st.markdown(_pretty_table(sub, ["Date", "Position", "Unit_ID", "Event",
+                                                "Driver", "SLSV_at_SV", "Reason"], height=460),
+                            unsafe_allow_html=True)
+                st.write("")
                 st.download_button("⬇ Events (CSV)", sub.to_csv(index=False).encode(),
                                    f"{tail}_events.csv", "text/csv")
         else:
