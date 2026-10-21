@@ -365,17 +365,25 @@ with tabs[3]:
 
         ev["Scope"] = [_scope(t, k, e) for t, k, e in
                        zip(ev["Trigger"], ev["Unit_Kind"], ev["Event"])]
+        # map each event to its aircraft family (via the tail it flies on)
+        _fammap = fleet.set_index("Tail")["Aircraft_Family"].to_dict() if not fleet.empty else {}
+        ev["Aircraft_Type"] = ev["Tail"].map(_fammap)
 
-        f1, f2, f3 = st.columns([1, 2.2, 1.2])
+        f1, f2, f3, f4 = st.columns([1, 1, 2, 1])
         scope = f1.selectbox("Category", ["Airframe", "Landing gear", "Engine", "APU", "LLP", "All"],
                              key="sv_scope")
+        _families = ["All types"] + sorted(ev["Aircraft_Type"].dropna().unique().tolist())
+        ac_type = f2.selectbox("Aircraft type", _families, key="sv_actype")
+
         pool = ev if scope == "All" else ev[ev["Scope"] == scope]
+        if ac_type != "All types":
+            pool = pool[pool["Aircraft_Type"] == ac_type]
         counts = pool["Event"].value_counts()
         opts = ["(all in category)"] + list(counts.index)
-        sv_type = f2.selectbox("SV type", opts, key="sv_type",
+        sv_type = f3.selectbox("SV type", opts, key="sv_type",
                                format_func=lambda x: x if x == "(all in category)"
                                else f"{x}   ({counts[x]})")
-        horizon_y = f3.slider("Within next (years)", 1, 25, 10, key="sv_horizon")
+        horizon_y = f4.slider("Within next (years)", 1, 25, 10, key="sv_horizon")
 
         as_of = proj.dates[0]
         cutoff = as_of + pd.offsets.MonthEnd(horizon_y * 12)
