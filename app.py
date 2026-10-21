@@ -88,12 +88,24 @@ st.markdown(f"""
   .kpi .s {{ font-size:.72rem; color:{ACCENT2}; margin-top:.15rem; }}
 
   /* ── tabs ── */
-  .stTabs [data-baseweb="tab-list"] {{ gap:.35rem; background:{PANEL}; border:1px solid {BORDER};
-    border-radius:12px; padding:.35rem; }}
-  .stTabs [data-baseweb="tab"] {{ border-radius:9px; padding:.45rem 1rem; color:{MUTED};
-    font-weight:600; font-size:.84rem; }}
-  .stTabs [aria-selected="true"] {{ background:{ACCENT} !important; color:#fff !important;
-    box-shadow:0 4px 14px rgba(45,127,249,.4); }}
+  .stTabs [data-baseweb="tab-list"] {{ gap:.4rem;
+    background:linear-gradient(180deg,#141d30 0%, #0f1726 100%);
+    border:1px solid {BORDER}; border-radius:16px; padding:.45rem;
+    box-shadow:0 10px 30px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.04); }}
+  .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {{ display:none; }}
+  .stTabs [data-baseweb="tab"] {{ border-radius:11px; padding:.5rem 1.15rem; color:{MUTED};
+    font-weight:600; font-size:.85rem; letter-spacing:.2px; border:1px solid transparent;
+    transition:all .18s ease; }}
+  .stTabs [data-baseweb="tab"]:hover {{ color:{TEXT};
+    background:rgba(255,255,255,.04); border-color:rgba(255,255,255,.07);
+    transform:translateY(-1px); }}
+  .stTabs [aria-selected="true"] {{ color:#fff !important;
+    background:linear-gradient(135deg,{ACCENT} 0%, #1f5fd0 100%) !important;
+    border-color:rgba(255,255,255,.18) !important;
+    box-shadow:0 6px 18px rgba(45,127,249,.5), inset 0 1px 0 rgba(255,255,255,.25);
+    transform:translateY(-1px); }}
+  .stTabs [aria-selected="true"]:hover {{ color:#fff !important;
+    background:linear-gradient(135deg,{ACCENT2} 0%, {ACCENT} 100%) !important; }}
 
   /* ── panels / widgets ── */
   h2, h3, .stSubheader {{ color:{TEXT} !important; }}
