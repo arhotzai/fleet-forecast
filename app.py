@@ -142,43 +142,50 @@ if _APP_PW and not st.session_state.get("_authed"):
               "96-28.65 96-64s-60.65-64-96-64z")
     st.markdown(f"""
     <style>
-      .ff-hero {{ position:relative; margin:.2rem 0 1.5rem; border-radius:18px; overflow:hidden;
+      .ff-hero {{ position:relative; margin:.2rem 0 1.1rem; border-radius:18px; overflow:hidden;
         background:linear-gradient(120deg,#0a1020 0%, #10274e 50%, #0a1020 100%);
-        border:1px solid #2f4a7a; height:140px;
+        border:1px solid #2f4a7a; height:118px;
         box-shadow:0 14px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); }}
       .ff-hero .sky {{ position:absolute; inset:0; width:100%; height:100%; }}
       .ff-arc {{ stroke-dasharray:5 9; animation:ffdash 16s linear infinite; }}
       @keyframes ffdash {{ to {{ stroke-dashoffset:-320; }} }}
       .ff-plane {{ animation:fffly 9s ease-in-out infinite; }}
-      @keyframes fffly {{ 0%{{transform:translate(0,0)}} 50%{{transform:translate(14px,-9px)}}
+      @keyframes fffly {{ 0%{{transform:translate(0,0)}} 50%{{transform:translate(11px,-6px)}}
         100%{{transform:translate(0,0)}} }}
       .ff-star {{ animation:fftw 4s ease-in-out infinite; }}
       @keyframes fftw {{ 0%,100%{{opacity:.25}} 50%{{opacity:.9}} }}
       /* login card */
-      div[data-testid="stForm"] {{ background:linear-gradient(180deg,{PANEL2},{PANEL});
-        border:1px solid {BORDER}; border-radius:16px; padding:1.4rem 1.6rem;
-        box-shadow:0 10px 34px rgba(0,0,0,.4); }}
+      div[data-testid="stForm"] {{ background:linear-gradient(180deg,#18212f,#121825);
+        border:1px solid #2b3550; border-radius:18px; padding:1.9rem 1.9rem 1.5rem;
+        box-shadow:0 18px 50px rgba(0,0,0,.5); position:relative; overflow:hidden; }}
+      div[data-testid="stForm"]::before {{ content:""; position:absolute; left:0; right:0; top:0;
+        height:3px; background:linear-gradient(90deg,{ACCENT},{ACCENT2},transparent); }}
+      div[data-testid="stForm"] [data-testid="stMarkdownContainer"] {{ text-align:center; }}
+      div[data-testid="stForm"] [data-testid="stMarkdownContainer"] h4 {{ font-size:1.15rem; }}
+      div[data-testid="stForm"] input {{ background:#0d1420 !important; border:1px solid #2b3550 !important;
+        border-radius:11px !important; color:#E6EAF2 !important; text-align:center; }}
+      .ff-confid {{ text-align:center; color:{MUTED}; font-size:.8rem; margin-top:.75rem; }}
     </style>
     <div class="ff-hero">
-      <svg class="sky" viewBox="0 0 1200 160" preserveAspectRatio="xMidYMid slice">
+      <svg class="sky" viewBox="0 0 1200 120" preserveAspectRatio="xMidYMid slice">
         <defs>
-          <radialGradient id="g1" cx="82%" cy="30%" r="70%">
-            <stop offset="0%" stop-color="{ACCENT}" stop-opacity=".40"/>
+          <radialGradient id="g1" cx="50%" cy="8%" r="78%">
+            <stop offset="0%" stop-color="{ACCENT}" stop-opacity=".30"/>
             <stop offset="100%" stop-color="{ACCENT}" stop-opacity="0"/>
           </radialGradient>
         </defs>
-        <rect width="1200" height="160" fill="url(#g1)"/>
-        <circle class="ff-star" cx="430" cy="40" r="1.6" fill="#fff"/>
-        <circle class="ff-star" cx="560" cy="95" r="2" fill="#fff" style="animation-delay:1s"/>
-        <circle class="ff-star" cx="720" cy="28" r="1.4" fill="#fff" style="animation-delay:2s"/>
-        <circle class="ff-star" cx="880" cy="80" r="1.8" fill="#fff" style="animation-delay:.5s"/>
-        <circle class="ff-star" cx="1010" cy="40" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
-        <path class="ff-arc" d="M60 140 Q 600 5 1160 70" fill="none" stroke="{ACCENT2}"
+        <rect width="1200" height="120" fill="url(#g1)"/>
+        <circle class="ff-star" cx="300" cy="30" r="1.5" fill="#fff"/>
+        <circle class="ff-star" cx="470" cy="52" r="1.9" fill="#fff" style="animation-delay:1s"/>
+        <circle class="ff-star" cx="640" cy="22" r="1.4" fill="#fff" style="animation-delay:2s"/>
+        <circle class="ff-star" cx="900" cy="48" r="1.7" fill="#fff" style="animation-delay:.5s"/>
+        <circle class="ff-star" cx="1040" cy="28" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
+        <path class="ff-arc" d="M90 86 Q 600 30 1110 86" fill="none" stroke="{ACCENT2}"
               stroke-width="2.4" stroke-linecap="round" opacity=".85"/>
-        <circle cx="60" cy="140" r="5.5" fill="#fff"/>
-        <circle cx="1160" cy="70" r="6" fill="{ACCENT2}"/>
+        <circle cx="90" cy="86" r="5.5" fill="#fff"/>
+        <circle cx="1110" cy="86" r="6" fill="{ACCENT2}"/>
         <g class="ff-plane">
-          <g transform="translate(1052 82) rotate(-18) scale(.07)">
+          <g transform="translate(770 46) rotate(5) scale(.07)">
             <path fill="#ffffff" d="{_PLANE}"/>
           </g>
         </g>
@@ -191,14 +198,15 @@ if _APP_PW and not st.session_state.get("_authed"):
         with st.form("login"):
             st.markdown("#### 🔒 Enter password to continue")
             _pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                                placeholder="Password")
+                                placeholder="Enter password")
             if st.form_submit_button("Enter  →", type="primary", use_container_width=True):
                 if _pw == str(_APP_PW):
                     st.session_state["_authed"] = True
                     st.rerun()
                 else:
                     st.error("Incorrect password.")
-        st.caption("Confidential — access restricted to authorised Aegean personnel.")
+        st.markdown("<div class='ff-confid'>🔒 Confidential — access restricted to "
+                    "authorised Aegean personnel.</div>", unsafe_allow_html=True)
     st.stop()
 
 
