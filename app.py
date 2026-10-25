@@ -142,25 +142,15 @@ if _APP_PW and not st.session_state.get("_authed"):
               "96-28.65 96-64s-60.65-64-96-64z")
     st.markdown(f"""
     <style>
-      .ff-hero {{ position:relative; margin:.2rem 0 1.5rem; border-radius:20px; overflow:hidden;
+      .ff-hero {{ position:relative; margin:.2rem 0 1.5rem; border-radius:18px; overflow:hidden;
         background:linear-gradient(120deg,#0a1020 0%, #10274e 50%, #0a1020 100%);
-        border:1px solid #2f4a7a; min-height:250px;
-        box-shadow:0 18px 60px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05); }}
+        border:1px solid #2f4a7a; height:140px;
+        box-shadow:0 14px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); }}
       .ff-hero .sky {{ position:absolute; inset:0; width:100%; height:100%; }}
-      .ff-hero .copy {{ position:relative; z-index:2; padding:2.4rem 2.8rem; max-width:640px; }}
-      .ff-hero .eyebrow {{ color:{ACCENT2}; font-size:.72rem; letter-spacing:3.5px; font-weight:700;
-        text-transform:uppercase; }}
-      .ff-hero .big {{ color:#fff; font-size:2.5rem; font-weight:800; margin:.35rem 0 .5rem;
-        line-height:1.04; letter-spacing:.3px; }}
-      .ff-hero .big .ac {{ color:{ACCENT2}; }}
-      .ff-hero .sub {{ color:#c7d2e6; font-size:1.03rem; max-width:470px; line-height:1.55; }}
-      .ff-hero .chips {{ display:flex; gap:.5rem; flex-wrap:wrap; margin-top:1.2rem; }}
-      .ff-hero .chip {{ background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.15);
-        color:#dce6f5; font-size:.76rem; font-weight:600; padding:.36rem .85rem; border-radius:999px; }}
       .ff-arc {{ stroke-dasharray:5 9; animation:ffdash 16s linear infinite; }}
       @keyframes ffdash {{ to {{ stroke-dashoffset:-320; }} }}
       .ff-plane {{ animation:fffly 9s ease-in-out infinite; }}
-      @keyframes fffly {{ 0%{{transform:translate(0,0)}} 50%{{transform:translate(14px,-10px)}}
+      @keyframes fffly {{ 0%{{transform:translate(0,0)}} 50%{{transform:translate(14px,-9px)}}
         100%{{transform:translate(0,0)}} }}
       .ff-star {{ animation:fftw 4s ease-in-out infinite; }}
       @keyframes fftw {{ 0%,100%{{opacity:.25}} 50%{{opacity:.9}} }}
@@ -170,40 +160,29 @@ if _APP_PW and not st.session_state.get("_authed"):
         box-shadow:0 10px 34px rgba(0,0,0,.4); }}
     </style>
     <div class="ff-hero">
-      <svg class="sky" viewBox="0 0 1200 300" preserveAspectRatio="xMidYMid slice">
+      <svg class="sky" viewBox="0 0 1200 160" preserveAspectRatio="xMidYMid slice">
         <defs>
-          <radialGradient id="g1" cx="82%" cy="18%" r="65%">
+          <radialGradient id="g1" cx="82%" cy="30%" r="70%">
             <stop offset="0%" stop-color="{ACCENT}" stop-opacity=".40"/>
             <stop offset="100%" stop-color="{ACCENT}" stop-opacity="0"/>
           </radialGradient>
         </defs>
-        <rect width="1200" height="300" fill="url(#g1)"/>
-        <circle class="ff-star" cx="760" cy="60" r="1.6" fill="#fff"/>
-        <circle class="ff-star" cx="880" cy="110" r="2" fill="#fff" style="animation-delay:1s"/>
-        <circle class="ff-star" cx="980" cy="45" r="1.4" fill="#fff" style="animation-delay:2s"/>
-        <circle class="ff-star" cx="1080" cy="95" r="1.8" fill="#fff" style="animation-delay:.5s"/>
-        <circle class="ff-star" cx="680" cy="30" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
-        <path class="ff-arc" d="M80 265 Q 650 30 1160 130" fill="none" stroke="{ACCENT2}"
+        <rect width="1200" height="160" fill="url(#g1)"/>
+        <circle class="ff-star" cx="430" cy="40" r="1.6" fill="#fff"/>
+        <circle class="ff-star" cx="560" cy="95" r="2" fill="#fff" style="animation-delay:1s"/>
+        <circle class="ff-star" cx="720" cy="28" r="1.4" fill="#fff" style="animation-delay:2s"/>
+        <circle class="ff-star" cx="880" cy="80" r="1.8" fill="#fff" style="animation-delay:.5s"/>
+        <circle class="ff-star" cx="1010" cy="40" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
+        <path class="ff-arc" d="M60 140 Q 600 5 1160 70" fill="none" stroke="{ACCENT2}"
               stroke-width="2.4" stroke-linecap="round" opacity=".85"/>
-        <circle cx="80" cy="265" r="6" fill="#fff"/>
-        <circle cx="1160" cy="130" r="6.5" fill="{ACCENT2}"/>
+        <circle cx="60" cy="140" r="5.5" fill="#fff"/>
+        <circle cx="1160" cy="70" r="6" fill="{ACCENT2}"/>
         <g class="ff-plane">
-          <g transform="translate(1035 150) rotate(-20) scale(.075)">
+          <g transform="translate(1052 82) rotate(-18) scale(.07)">
             <path fill="#ffffff" d="{_PLANE}"/>
           </g>
         </g>
       </svg>
-      <div class="copy">
-        <div class="eyebrow">Aegean · Fleet Engineering</div>
-        <div class="big">Welcome <span class="ac">aboard</span></div>
-        <div class="sub">Your fleet's maintenance future — projected, visualised, and on demand.</div>
-        <div class="chips">
-          <span class="chip">📅 Shop-visit calendar</span>
-          <span class="chip">📊 SV dashboard</span>
-          <span class="chip">🔧 LLP life status</span>
-          <span class="chip">🤖 Ask Claude</span>
-        </div>
-      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -232,13 +211,49 @@ def _run(db_bytes: bytes, llp_bytes: bytes | None):
     return ds, proj
 
 
-# ── Sidebar: uploads ──────────────────────────────────────────
+# ── Navigation (lives in the left sidebar, under the upload) ──
+NAV_ASK   = "🤖  Ask Claude"
+NAV_DASH  = "📊  SV Dashboard"
+NAV_CAL   = "📅  SV Calendar"
+NAV_LOG   = "🗓  Event Log"
+NAV_LLP   = "🔧  LLP Status"
+NAV_AC    = "✈️  Aircraft Detail"
+NAV_EXP   = "⬇  Export"
+NAV_NOTES = "⚠️  Data Notes"
+NAV_ITEMS = [NAV_ASK, NAV_DASH, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
+
+st.markdown("""<style>
+  section[data-testid="stSidebar"] div[role="radiogroup"]{gap:.5rem;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+    display:flex;align-items:center;width:100%;margin:0;padding:.85rem 1.05rem;border-radius:13px;
+    cursor:pointer;background:linear-gradient(180deg,#141d30,#0f1726);border:1px solid #273046;
+    transition:all .15s ease;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+    border-color:#3a5fa0;transform:translateX(3px);box-shadow:0 4px 14px rgba(0,0,0,.35);}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{display:none;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+    font-size:1.03rem!important;font-weight:600;color:#c7d2e6;letter-spacing:.2px;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover p{color:#fff;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+    background:linear-gradient(135deg,#2D7FF9,#1f5fd0);border-color:rgba(255,255,255,.22);
+    box-shadow:0 6px 20px rgba(45,127,249,.5);}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p{color:#fff!important;}
+  .nav-h{color:#8A93A6;font-size:.72rem;letter-spacing:2px;font-weight:700;
+    text-transform:uppercase;margin:1rem 0 .55rem;}
+</style>""", unsafe_allow_html=True)
+
+
+# ── Sidebar: uploads + navigation ─────────────────────────────
 with st.sidebar:
     st.header("Database")
     db_file = st.file_uploader("Fleet Maintenance Status Database (.xlsx)", type=["xlsx"], key="db")
     _DEFAULT_DB = Path(__file__).parent / "data" / "FLEET_MAINTENANCE_STATUS_DATABASE.xlsx"
     if db_file is None and _DEFAULT_DB.exists():
         st.caption("Using the bundled database — upload a file above to override.")
+
+    st.markdown("<div class='nav-h'>Navigation</div>", unsafe_allow_html=True)
+    nav = st.radio("Navigate", NAV_ITEMS, label_visibility="collapsed", key="nav")
+
     st.divider()
     run_clicked = st.button("↻ Re-run projection", type="primary", use_container_width=True)
 
@@ -439,11 +454,8 @@ st.markdown(
     + _tile(f"{_n_llp:,}", "LLP replacements", "life-limited parts", C_LLP)
     + '</div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["🤖 Ask Claude", "📊 SV Dashboard", "📅 SV Calendar", "🗓 Event Log",
-                "🔧 LLP Status", "✈️ Aircraft Detail", "⬇ Export", "⚠️ Data Notes"])
-
 # ── SV Calendar (SV_PLAN_v1) ──────────────────────────────────
-with tabs[2]:
+if nav == NAV_CAL:
     st.subheader("Shop-visit calendar — month × aircraft")
     v1 = proj.sv_plan_v1
     if v1 is None or v1.empty:
@@ -462,7 +474,7 @@ with tabs[2]:
         st.dataframe(_blank(view), use_container_width=True, hide_index=True, height=500)
 
 # ── Event Log ─────────────────────────────────────────────────
-with tabs[3]:
+if nav == NAV_LOG:
     st.subheader("Projected shop-visit / replacement events")
     if events.empty:
         st.info("No events projected.")
@@ -503,7 +515,7 @@ TRIG_LABEL = {"LIMIT": "Reached limit", "HARD_LINK": "Hard link",
 _TRIG_COLORS_F = {"Reached limit": C_LIMIT, "Hard link": C_HARD,
                   "Soft link": C_SOFT, "LLP replacement": C_LLP}
 
-with tabs[1]:
+if nav == NAV_DASH:
     st.subheader("SV Dashboard — upcoming events by type")
     if events.empty:
         st.info("No events.")
@@ -604,7 +616,7 @@ with tabs[1]:
             st.info("No events of this type within the chosen horizon.")
 
 # ── LLP Status ────────────────────────────────────────────────
-with tabs[4]:
+if nav == NAV_LLP:
     st.subheader("Life-limited parts — current status")
     llp = ds.get("LLP_Registry")
     if llp.empty:
@@ -645,7 +657,7 @@ with tabs[4]:
                            "llp_status.csv", "text/csv")
 
 # ── Aircraft Detail ───────────────────────────────────────────
-with tabs[5]:
+if nav == NAV_AC:
     st.subheader("Per-aircraft view")
     if fleet.empty:
         st.info("No fleet.")
@@ -695,7 +707,7 @@ with tabs[5]:
                                    frame.to_csv(index=False).encode(), f"{tail}.csv", "text/csv")
 
 # ── Ask Claude (home) ─────────────────────────────────────────
-with tabs[0]:
+if nav == NAV_ASK:
     st.markdown(
         f"""<div style="padding:.4rem 0 1rem">
           <div style="font-size:1.7rem;font-weight:800;color:{TEXT};">
@@ -758,7 +770,7 @@ with tabs[0]:
             st.rerun()
 
 # ── Export ────────────────────────────────────────────────────
-with tabs[6]:
+if nav == NAV_EXP:
     st.subheader("Download the full projection")
     st.caption("A structured workbook: SV_PLAN_v1 (calendar), SV_PLAN_v2 (event × aircraft), "
                "and one sheet per aircraft with the month-by-month counters.")
@@ -779,7 +791,7 @@ with tabs[6]:
                            "sv_plan_v2.csv", "text/csv")
 
 # ── Data notes ────────────────────────────────────────────────
-with tabs[7]:
+if nav == NAV_NOTES:
     st.subheader("Ingestion notes")
     if not ds.warnings:
         st.success("No data warnings.")
