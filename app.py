@@ -823,10 +823,17 @@ if nav == NAV_UTIL:
             fig.update_yaxes(gridcolor=BORDER, zeroline=False)
             return fig
 
-        # colour each aircraft type by family group
+        # colour each aircraft type by family group (distinct shades within a group)
         _GREEN, _BLUE, _DEEP = "#3FB06B", "#2D7FF9", "#16489C"
+        _FAM_COLORS = {
+            "A320ceo": "#2D7FF9", "A321ceo": "#5AA7FF", "A320ceoSharklets": "#1C6FE0",
+            "A320neo": "#16489C", "A321neo": "#2E63C8",
+            "ATR72": "#3FB06B", "ATR42": "#2E8B57", "ATR72XT": "#79D6A4",
+        }
 
         def _fam_color(fam):
+            if fam in _FAM_COLORS:
+                return _FAM_COLORS[fam]
             f = str(fam).upper()
             if "ATR" in f or "D100" in f or "DASH" in f or "DH" in f or "Q400" in f:
                 return _GREEN
@@ -907,37 +914,50 @@ if nav == NAV_UTIL:
         st.caption(f"**{len(active)}** aircraft active on {_d:%d %b %Y}  "
                    f"(of {len(fl)} in the database).")
 
-        g1, g2 = st.columns([1, 1.4])
-        with g1:
+        dc1, _dc2 = st.columns([1, 1.1])
+        with dc1:
             if "Leased_Owned" in active.columns and not active.empty:
                 lo = active["Leased_Owned"].value_counts().reset_index()
                 lo.columns = ["Type", "Count"]
-                figl = px.pie(lo, names="Type", values="Count", hole=.62, color="Type",
+                figl = px.pie(lo, names="Type", values="Count", hole=.6, color="Type",
                               color_discrete_map={"Leased": ACCENT, "Owned": _GREEN})
-                figl.update_traces(textinfo="label+percent", textfont_color="#fff", textfont_size=15)
-                st.plotly_chart(_sty(figl, "Owned vs leased", h=330, legend=True),
+                figl.update_traces(textinfo="label+percent", textfont_color="#fff", textfont_size=16,
+                                   marker=dict(line=dict(color=BG0, width=2)))
+                st.plotly_chart(_sty(figl, "Owned vs leased", h=360, legend=True),
                                 use_container_width=True)
-        with g2:
-            if "Aircraft_Family" in active.columns and not active.empty:
-                fam = active["Aircraft_Family"].value_counts().reset_index()
-                fam.columns = ["Family", "Count"]
-                figf = px.bar(fam, x="Family", y="Count", color="Family",
-                              color_discrete_map=cmap, text="Count")
-                figf.update_traces(textposition="outside", textfont_color=TEXT, marker_line_width=0)
-                figf.update_layout(xaxis_title="", yaxis_title="aircraft")
-                st.plotly_chart(_sty(figf, "Aircraft by type", h=330), use_container_width=True)
+
+        # aircraft by type — full width, taller, number labels never clipped
+        if "Aircraft_Family" in active.columns and not active.empty:
+            fam = active["Aircraft_Family"].value_counts().reset_index()
+            fam.columns = ["Family", "Count"]
+            figf = px.bar(fam, x="Family", y="Count", color="Family",
+                          color_discrete_map=cmap, text="Count")
+            figf.update_traces(textposition="outside", textfont=dict(color=TEXT, size=16),
+                               marker_line_width=0, cliponaxis=False,
+                               hovertemplate="<b>%{x}</b>: %{y} aircraft<extra></extra>")
+            figf.update_layout(xaxis_title="", yaxis_title="aircraft", bargap=.28)
+            figf.update_yaxes(range=[0, float(fam["Count"].max()) * 1.18])
+            figf.update_xaxes(tickangle=-20)
+            st.plotly_chart(_sty(figf, "Aircraft by type", h=440), use_container_width=True)
 
         # lessors / owners — stacked by aircraft type (one colour per type)
         if "Owner" in active.columns and not active.empty:
             ot = active.groupby(["Owner", "Aircraft_Family"]).size().reset_index(name="Count")
-            order = active["Owner"].value_counts().index.tolist()
+            totals = active.groupby("Owner").size()
+            order = totals.sort_values(ascending=False).index.tolist()
             figo = px.bar(ot, x="Count", y="Owner", color="Aircraft_Family", orientation="h",
                           color_discrete_map=cmap, category_orders={"Owner": order[::-1]})
-            figo.update_traces(marker_line_width=0)
+            figo.update_traces(marker_line_width=0,
+                               hovertemplate="<b>%{y}</b> · %{fullData.name}: %{x}<extra></extra>")
+            # total count at the end of each owner's bar
+            for _own, _t in totals.items():
+                figo.add_annotation(x=_t, y=_own, text=f"<b>{_t}</b>", showarrow=False,
+                                    xanchor="left", xshift=8, font=dict(color=TEXT, size=13))
             figo.update_layout(barmode="stack", xaxis_title="aircraft", yaxis_title="",
-                               legend_title="Type")
+                               legend_title="Type", bargap=.3)
+            figo.update_xaxes(range=[0, float(totals.max()) * 1.12])
             st.plotly_chart(_sty(figo, "Aircraft per owner / lessor — by type",
-                                 h=max(320, len(order) * 30 + 120), legend=True),
+                                 h=max(340, len(order) * 32 + 130), legend=True),
                             use_container_width=True)
 
         st.markdown("**Utilisation assumptions — per unit**")
