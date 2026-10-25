@@ -144,7 +144,7 @@ if _APP_PW and not st.session_state.get("_authed"):
     <style>
       .ff-hero {{ position:relative; margin:.2rem 0 1.1rem; border-radius:18px; overflow:hidden;
         background:linear-gradient(120deg,#0a1020 0%, #10274e 50%, #0a1020 100%);
-        border:1px solid #2f4a7a; height:118px;
+        border:1px solid #2f4a7a; height:104px;
         box-shadow:0 14px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); }}
       .ff-hero .sky {{ position:absolute; inset:0; width:100%; height:100%; }}
       .ff-arc {{ stroke-dasharray:5 9; animation:ffdash 16s linear infinite; }}
@@ -167,25 +167,25 @@ if _APP_PW and not st.session_state.get("_authed"):
       .ff-confid {{ text-align:center; color:{MUTED}; font-size:.8rem; margin-top:.75rem; }}
     </style>
     <div class="ff-hero">
-      <svg class="sky" viewBox="0 0 1200 120" preserveAspectRatio="xMidYMid slice">
+      <svg class="sky" viewBox="0 0 1200 100" preserveAspectRatio="xMidYMid slice">
         <defs>
-          <radialGradient id="g1" cx="50%" cy="8%" r="78%">
+          <radialGradient id="g1" cx="50%" cy="4%" r="82%">
             <stop offset="0%" stop-color="{ACCENT}" stop-opacity=".30"/>
             <stop offset="100%" stop-color="{ACCENT}" stop-opacity="0"/>
           </radialGradient>
         </defs>
-        <rect width="1200" height="120" fill="url(#g1)"/>
-        <circle class="ff-star" cx="300" cy="30" r="1.5" fill="#fff"/>
-        <circle class="ff-star" cx="470" cy="52" r="1.9" fill="#fff" style="animation-delay:1s"/>
-        <circle class="ff-star" cx="640" cy="22" r="1.4" fill="#fff" style="animation-delay:2s"/>
-        <circle class="ff-star" cx="900" cy="48" r="1.7" fill="#fff" style="animation-delay:.5s"/>
-        <circle class="ff-star" cx="1040" cy="28" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
-        <path class="ff-arc" d="M90 86 Q 600 30 1110 86" fill="none" stroke="{ACCENT2}"
-              stroke-width="2.4" stroke-linecap="round" opacity=".85"/>
-        <circle cx="90" cy="86" r="5.5" fill="#fff"/>
-        <circle cx="1110" cy="86" r="6" fill="{ACCENT2}"/>
+        <rect width="1200" height="100" fill="url(#g1)"/>
+        <circle class="ff-star" cx="300" cy="34" r="1.5" fill="#fff"/>
+        <circle class="ff-star" cx="470" cy="62" r="1.8" fill="#fff" style="animation-delay:1s"/>
+        <circle class="ff-star" cx="730" cy="30" r="1.4" fill="#fff" style="animation-delay:2s"/>
+        <circle class="ff-star" cx="900" cy="60" r="1.7" fill="#fff" style="animation-delay:.5s"/>
+        <circle class="ff-star" cx="1040" cy="34" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
+        <path class="ff-arc" d="M110 50 Q 600 26 1090 50" fill="none" stroke="{ACCENT2}"
+              stroke-width="2.4" stroke-linecap="round" opacity=".9"/>
+        <circle cx="110" cy="50" r="6" fill="#fff"/>
+        <circle cx="1090" cy="50" r="6" fill="{ACCENT2}"/>
         <g class="ff-plane">
-          <g transform="translate(770 46) rotate(5) scale(.07)">
+          <g transform="translate(580 20) rotate(2) scale(.072)">
             <path fill="#ffffff" d="{_PLANE}"/>
           </g>
         </g>
@@ -220,34 +220,39 @@ def _run(db_bytes: bytes, llp_bytes: bytes | None):
 
 
 # ── Navigation (lives in the left sidebar, under the upload) ──
-NAV_ASK   = "🤖  Ask Claude"
-NAV_DASH  = "📊  SV Dashboard"
-NAV_CAL   = "📅  SV Calendar"
-NAV_LOG   = "🗓  Event Log"
-NAV_LLP   = "🔧  LLP Status"
-NAV_AC    = "✈️  Aircraft Detail"
-NAV_EXP   = "⬇  Export"
-NAV_NOTES = "⚠️  Data Notes"
-NAV_ITEMS = [NAV_ASK, NAV_DASH, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
+NAV_ASK   = "💬   Ask Claude"
+NAV_DASH  = "📊   SV Dashboard"
+NAV_UTIL  = "📈   Utilisation & Stats"
+NAV_CAL   = "🗓️   SV Calendar"
+NAV_LOG   = "📋   Event Log"
+NAV_LLP   = "🔧   LLP Status"
+NAV_AC    = "🛩️   Aircraft Detail"
+NAV_EXP   = "📤   Export"
+NAV_NOTES = "ℹ️   Data Notes"
+NAV_ITEMS = [NAV_ASK, NAV_DASH, NAV_UTIL, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
 
 st.markdown("""<style>
-  section[data-testid="stSidebar"] div[role="radiogroup"]{gap:.5rem;}
+  section[data-testid="stSidebar"] div[role="radiogroup"]{gap:.42rem;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-    display:flex;align-items:center;width:100%;margin:0;padding:.85rem 1.05rem;border-radius:13px;
-    cursor:pointer;background:linear-gradient(180deg,#141d30,#0f1726);border:1px solid #273046;
-    transition:all .15s ease;}
+    display:flex;align-items:center;justify-content:center;      /* centred */
+    width:100%;margin:0;padding:.78rem .9rem;border-radius:12px;cursor:pointer;
+    background:#121a28;border:1px solid #232d42;transition:all .16s ease;position:relative;
+    overflow:hidden;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-    border-color:#3a5fa0;transform:translateX(3px);box-shadow:0 4px 14px rgba(0,0,0,.35);}
+    background:#17223a;border-color:#3a5fa0;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{display:none;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-    font-size:1.03rem!important;font-weight:600;color:#c7d2e6;letter-spacing:.2px;}
+    font-size:1rem!important;font-weight:600;color:#aeb9cc;letter-spacing:.3px;
+    text-align:center;margin:0!important;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover p{color:#fff;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-    background:linear-gradient(135deg,#2D7FF9,#1f5fd0);border-color:rgba(255,255,255,.22);
-    box-shadow:0 6px 20px rgba(45,127,249,.5);}
+    background:linear-gradient(135deg,#2D7FF9 0%,#1f5fd0 100%);border-color:transparent;
+    box-shadow:0 6px 18px rgba(45,127,249,.45);}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked)::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#8fc4ff;}
   section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p{color:#fff!important;}
-  .nav-h{color:#8A93A6;font-size:.72rem;letter-spacing:2px;font-weight:700;
-    text-transform:uppercase;margin:1rem 0 .55rem;}
+  .nav-h{color:#8A93A6;font-size:.72rem;letter-spacing:2.5px;font-weight:700;
+    text-transform:uppercase;margin:1.1rem 0 .6rem;text-align:center;}
 </style>""", unsafe_allow_html=True)
 
 
@@ -547,25 +552,26 @@ if nav == NAV_DASH:
         _fammap = fleet.set_index("Tail")["Aircraft_Family"].to_dict() if not fleet.empty else {}
         ev["Aircraft_Type"] = ev["Tail"].map(_fammap)
 
-        f1, f2, f3, f4 = st.columns([1, 1, 2, 1])
-        scope = f1.selectbox("Category", ["Airframe", "Landing gear", "Engine", "APU", "LLP", "All"],
-                             key="sv_scope")
-        _families = ["All types"] + sorted(ev["Aircraft_Type"].dropna().unique().tolist())
-        ac_type = f2.selectbox("Aircraft type", _families, key="sv_actype")
+        f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.8, .9])
+        scope_sel = f1.multiselect("Category", ["Airframe", "Landing gear", "Engine", "APU", "LLP"],
+                                   default=["Airframe"], key="sv_scope_ms",
+                                   placeholder="All categories")
+        _families = sorted(ev["Aircraft_Type"].dropna().unique().tolist())
+        ac_sel = f2.multiselect("Aircraft type", _families, key="sv_actype_ms",
+                                placeholder="All types")
 
-        pool = ev if scope == "All" else ev[ev["Scope"] == scope]
-        if ac_type != "All types":
-            pool = pool[pool["Aircraft_Type"] == ac_type]
+        pool = ev if not scope_sel else ev[ev["Scope"].isin(scope_sel)]
+        if ac_sel:
+            pool = pool[pool["Aircraft_Type"].isin(ac_sel)]
         counts = pool["Event"].value_counts()
-        opts = ["(all in category)"] + list(counts.index)
-        sv_type = f3.selectbox("SV type", opts, key="sv_type",
-                               format_func=lambda x: x if x == "(all in category)"
-                               else f"{x}   ({counts[x]})")
+        sv_sel = f3.multiselect("SV type", list(counts.index), key="sv_type_ms",
+                                format_func=lambda x: f"{x}   ({counts[x]})",
+                                placeholder="All SV types in selection")
         horizon_y = f4.slider("Within next (years)", 1, 25, 10, key="sv_horizon")
 
         as_of = proj.dates[0]
         cutoff = as_of + pd.offsets.MonthEnd(horizon_y * 12)
-        sel = pool if sv_type == "(all in category)" else pool[pool["Event"] == sv_type]
+        sel = pool if not sv_sel else pool[pool["Event"].isin(sv_sel)]
         sel = sel[(sel["Date"] >= as_of) & (sel["Date"] <= cutoff)].copy()
 
         total = len(sel)
@@ -586,7 +592,8 @@ if nav == NAV_DASH:
             + '</div>', unsafe_allow_html=True)
 
         if total:
-            title_what = sv_type if sv_type != "(all in category)" else scope
+            title_what = (", ".join(sv_sel) if sv_sel else
+                          ", ".join(scope_sel) if scope_sel else "all")
             # chart title lives OUTSIDE the figure so it never collides with the legend
             st.markdown(
                 f'<div style="font-weight:700;color:{TEXT};font-size:1.02rem;'
@@ -776,6 +783,98 @@ if nav == NAV_ASK:
                     text, df = f"Error: {exc}", None
             st.session_state["chat_display"].append({"role": "assistant", "text": text or "(no answer)", "df": df})
             st.rerun()
+
+# ── Utilisation & Statistics ──────────────────────────────────
+if nav == NAV_UTIL:
+    st.subheader("Utilisation assumptions & fleet statistics")
+    util = ds.get("Utilization")
+    if util.empty:
+        st.info("No utilisation data in the database.")
+    else:
+        u = util.copy()
+        for c in ["Annual_FH", "Annual_FC", "FH_FC_Ratio", "Annual_Evolution_Pct",
+                  "Min_Annual_FH", "Max_Annual_FH", "AOG_Lead_In_Months"]:
+            if c in u.columns:
+                u[c] = pd.to_numeric(u[c], errors="coerce")
+        _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        air = u[u["Unit_Kind"] == "AIRFRAME"]
+
+        st.markdown(
+            '<div class="kpi-row">'
+            + _tile(f"{air['Annual_FH'].sum():,.0f}", "Fleet annual FH", "airframe total / year", ACCENT)
+            + _tile(f"{air['Annual_FH'].mean():,.0f}", "Avg FH / aircraft", "per year", ACCENT2)
+            + _tile(f"{u['FH_FC_Ratio'].mean():.2f}", "Avg FH : FC", "hours per cycle", C_HARD)
+            + _tile(f"{len(u):,}", "Units with assumptions", "airframe · engine · APU", C_SOFT)
+            + '</div>', unsafe_allow_html=True)
+
+        def _sty(fig, title="", h=300):
+            fig.update_layout(template="plotly_dark", height=h, plot_bgcolor=PLOTLY_BG,
+                              paper_bgcolor=PLOTLY_BG, font=dict(color=TEXT), title=title,
+                              margin=dict(l=10, r=10, t=46, b=10), showlegend=False)
+            fig.update_xaxes(gridcolor=BORDER, zeroline=False)
+            fig.update_yaxes(gridcolor=BORDER, zeroline=False)
+            return fig
+
+        c1, c2 = st.columns(2)
+        with c1:
+            prof = (u[_MONTHS].apply(pd.to_numeric, errors="coerce").mean() * 100).round(1)
+            figm = px.bar(x=_MONTHS, y=prof.values, color_discrete_sequence=[ACCENT])
+            figm.update_traces(marker_line_width=0)
+            st.plotly_chart(_sty(figm, "Monthly utilisation profile  (% of annual)"),
+                            use_container_width=True)
+        with c2:
+            figh = px.histogram(air, x="Annual_FH", nbins=20, color_discrete_sequence=[ACCENT2])
+            st.plotly_chart(_sty(figh, "Annual FH spread across the fleet"),
+                            use_container_width=True)
+
+        c3, c4 = st.columns(2)
+        with c3:
+            if not fleet.empty and "Aircraft_Family" in fleet.columns:
+                fam = fleet["Aircraft_Family"].value_counts().reset_index()
+                fam.columns = ["Family", "Count"]
+                figf = px.bar(fam, x="Count", y="Family", orientation="h",
+                              color_discrete_sequence=[C_HARD])
+                figf.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(_sty(figf, "Aircraft by family"), use_container_width=True)
+        with c4:
+            if not fleet.empty and "Leased_Owned" in fleet.columns:
+                lo = fleet["Leased_Owned"].value_counts().reset_index()
+                lo.columns = ["Type", "Count"]
+                figo = px.pie(lo, names="Type", values="Count", hole=.62,
+                              color_discrete_sequence=[ACCENT, C_SOFT, C_LLP, ACCENT2])
+                figo.update_traces(textinfo="label+percent", textfont_color="#fff")
+                st.plotly_chart(_sty(figo, "Leased vs owned"), use_container_width=True)
+
+        if not fleet.empty:
+            j = air.merge(fleet[["Tail", "Aircraft_Family"]], left_on="Unit_ID",
+                          right_on="Tail", how="left")
+            if not j.empty and j["Aircraft_Family"].notna().any():
+                stats = (j.groupby("Aircraft_Family")
+                         .agg(Aircraft=("Unit_ID", "nunique"),
+                              Avg_FH=("Annual_FH", "mean"),
+                              Avg_FC=("Annual_FC", "mean"),
+                              Avg_Ratio=("FH_FC_Ratio", "mean"),
+                              Min_FH=("Annual_FH", "min"),
+                              Max_FH=("Annual_FH", "max")).reset_index())
+                for c in ["Avg_FH", "Avg_FC", "Avg_Ratio", "Min_FH", "Max_FH"]:
+                    stats[c] = stats[c].round(1)
+                st.markdown("**Utilisation statistics by aircraft family**")
+                st.markdown(_pretty_table(stats, list(stats.columns), height=300),
+                            unsafe_allow_html=True)
+                st.write("")
+
+        st.markdown("**Utilisation assumptions — per unit**")
+        st.caption("Annual FH/FC are spread across the year by the 12 monthly weights (they sum to "
+                   "~100%). Evolution % grows utilisation each year; Min/Max clamp it; AOG lead-in "
+                   "ramps a unit up over its first months in service.")
+        st.markdown(_pretty_table(u, ["Unit_ID", "Unit_Kind", "Annual_FH", "Annual_FC",
+                                      "FH_FC_Ratio", "Annual_Evolution_Pct", "Min_Annual_FH",
+                                      "Max_Annual_FH", "AOG_Lead_In_Months"], height=420),
+                    unsafe_allow_html=True)
+        st.write("")
+        st.download_button("⬇ Download utilisation assumptions (CSV)",
+                           util.to_csv(index=False).encode(), "utilisation.csv", "text/csv")
 
 # ── Export ────────────────────────────────────────────────────
 if nav == NAV_EXP:
