@@ -469,28 +469,42 @@ def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reaso
 
 # ── Global fleet cards (fleet composition only) ───────────────
 _famc = fleet["Aircraft_Family"].value_counts() if not fleet.empty else pd.Series(dtype=int)
-_util_g = ds.get("Utilization")
-_inst_e, _inst_a = set(), set()
-if not fleet.empty:
-    for _c in ("LHENG_ESN", "RHENG_ESN"):
-        if _c in fleet.columns:
-            _inst_e |= set(fleet[_c].dropna().astype(str))
-    if "APU_SN" in fleet.columns:
-        _inst_a = set(fleet["APU_SN"].dropna().astype(str))
-if _util_g is not None and not _util_g.empty:
-    _eng_u = _util_g[_util_g["Unit_Kind"] == "ENGINE"]["Unit_ID"].astype(str)
-    _apu_u = _util_g[_util_g["Unit_Kind"] == "APU"]["Unit_ID"].astype(str)
-    _n_spare_eng = int((~_eng_u.isin(_inst_e)).sum())
-    _n_spare_apu = int((~_apu_u.isin(_inst_a)).sum())
-else:
-    _n_spare_eng = _n_spare_apu = 0
+# spares = Components units with no installed tail; group engines by NEO/CEO/ATR
+_comp_g = ds.get("Components")
+_ENG_CAT = {"PW1100": "NEO", "PW1500": "NEO", "LEAP": "NEO",
+            "V2500": "CEO", "CFM56": "CEO", "PW127": "ATR"}
+_spare_items, _n_spare_eng, _n_spare_apu = [], 0, 0
+if _comp_g is not None and not _comp_g.empty and "Installed_On_Tail" in _comp_g.columns:
+    _free = (_comp_g["Installed_On_Tail"].isna()
+             | _comp_g["Installed_On_Tail"].astype(str).str.strip().isin(["", "nan", "None"]))
+    _eng_sp = _comp_g[(_comp_g["Unit_Kind"] == "ENGINE") & _free]
+    _apu_sp = _comp_g[(_comp_g["Unit_Kind"] == "APU") & _free]
+    _n_spare_eng, _n_spare_apu = len(_eng_sp), len(_apu_sp)
+    _vc = _eng_sp["Unit_Type"].value_counts(dropna=False)
+    _order = ["PW1100", "PW1500", "LEAP", "V2500", "CFM56", "PW127"]
+    _seen = set()
+    for _et in _order:
+        if _et in _vc.index:
+            _spare_items.append((f"{_ENG_CAT.get(_et, _et)} · {_et}", int(_vc[_et])))
+            _seen.add(_et)
+    for _et, _cnt in _vc.items():
+        if pd.notna(_et) and str(_et).strip() not in ("", "nan", "None") and _et not in _seen:
+            _spare_items.append((f"{_ENG_CAT.get(str(_et), str(_et))} · {_et}", int(_cnt)))
+    _unspec = int(sum(int(_vc[k]) for k in _vc.index
+                      if pd.isna(k) or str(k).strip() in ("", "nan", "None")))
+    if _unspec:
+        _spare_items.append(("Engines · no type set", _unspec))
+    if _n_spare_apu:
+        _spare_items.append(("APU", int(_n_spare_apu)))
+if not _spare_items:
+    _spare_items = [("Spare engines", _n_spare_eng), ("Spare APUs", _n_spare_apu)]
 
 st.markdown(
-    '<div style="display:grid;grid-template-columns:0.9fr 1.7fr 1.2fr;gap:.8rem;margin:.2rem 0 1rem;">'
+    '<div style="display:grid;grid-template-columns:0.85fr 1.6fr 1.4fr;gap:.8rem;margin:.2rem 0 1rem;">'
     + _tile(f"{_n_ac}", "Total aircraft", "in fleet", ACCENT)
     + _tile_break("Aircraft by type", list(_famc.items()), ACCENT2)
-    + _tile_break("Spares", [("Spare engines", _n_spare_eng), ("Spare APUs", _n_spare_apu)],
-                  C_SOFT, total=_n_spare_eng + _n_spare_apu)
+    + _tile_break("Spare engines &amp; APUs", _spare_items, C_SOFT,
+                  total=_n_spare_eng + _n_spare_apu)
     + '</div>', unsafe_allow_html=True)
 
 # ── SV Calendar (SV_PLAN_v1) ──────────────────────────────────
