@@ -808,7 +808,7 @@ if nav == NAV_UTIL:
             + _tile(f"{len(u):,}", "Units with assumptions", "airframe · engine · APU", C_SOFT)
             + '</div>', unsafe_allow_html=True)
 
-        def _sty(fig, title="", h=300):
+        def _sty(fig, title="", h=320):
             fig.update_layout(template="plotly_dark", height=h, plot_bgcolor=PLOTLY_BG,
                               paper_bgcolor=PLOTLY_BG, font=dict(color=TEXT), title=title,
                               margin=dict(l=10, r=10, t=46, b=10), showlegend=False)
@@ -816,35 +816,81 @@ if nav == NAV_UTIL:
             fig.update_yaxes(gridcolor=BORDER, zeroline=False)
             return fig
 
-        c1, c2 = st.columns(2)
-        with c1:
-            prof = (u[_MONTHS].apply(pd.to_numeric, errors="coerce").mean() * 100).round(1)
-            figm = px.bar(x=_MONTHS, y=prof.values, color_discrete_sequence=[ACCENT])
-            figm.update_traces(marker_line_width=0)
-            st.plotly_chart(_sty(figm, "Monthly utilisation profile  (% of annual)"),
-                            use_container_width=True)
-        with c2:
-            figh = px.histogram(air, x="Annual_FH", nbins=20, color_discrete_sequence=[ACCENT2])
-            st.plotly_chart(_sty(figh, "Annual FH spread across the fleet"),
-                            use_container_width=True)
+        # colour each aircraft type by family group
+        _GREEN, _BLUE, _DEEP = "#3FB06B", "#2D7FF9", "#16489C"
 
-        c3, c4 = st.columns(2)
-        with c3:
-            if not fleet.empty and "Aircraft_Family" in fleet.columns:
-                fam = fleet["Aircraft_Family"].value_counts().reset_index()
-                fam.columns = ["Family", "Count"]
-                figf = px.bar(fam, x="Count", y="Family", orientation="h",
-                              color_discrete_sequence=[C_HARD])
-                figf.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(_sty(figf, "Aircraft by family"), use_container_width=True)
-        with c4:
+        def _fam_color(fam):
+            f = str(fam).upper()
+            if "ATR" in f or "D100" in f or "DASH" in f or "DH" in f or "Q400" in f:
+                return _GREEN
+            if "NEO" in f:
+                return _DEEP
+            if "CEO" in f or f.startswith("A3"):
+                return _BLUE
+            return MUTED
+
+        # map airframe utilisation rows to their aircraft family (via the tail)
+        _fammap = fleet.set_index("Tail")["Aircraft_Family"].to_dict() if not fleet.empty else {}
+        u["Aircraft_Family"] = [(_fammap.get(uid) if k == "AIRFRAME" else None)
+                                for uid, k in zip(u["Unit_ID"], u["Unit_Kind"])]
+
+        # ── Monthly utilisation profile with a per-type filter ──
+        st.markdown("#### Monthly utilisation profile")
+        _fams = sorted([f for f in u["Aircraft_Family"].dropna().unique()])
+        prof_opts = ["All units", "Airframe", "Engine", "APU"] + _fams
+        cpf, _ = st.columns([1, 2])
+        pscope = cpf.selectbox("Show profile for", prof_opts, key="util_profile",
+                               help="Pick a unit kind or an aircraft type to see its own "
+                                    "monthly utilisation shape.")
+        if pscope == "All units":
+            sub = u
+        elif pscope in ("Airframe", "Engine", "APU"):
+            sub = u[u["Unit_Kind"] == pscope.upper()]
+        else:
+            sub = u[u["Aircraft_Family"] == pscope]
+        prof = (sub[_MONTHS].apply(pd.to_numeric, errors="coerce").mean() * 100).round(1)
+        figm = px.bar(x=_MONTHS, y=prof.values, color_discrete_sequence=[ACCENT])
+        figm.update_traces(marker_line_width=0,
+                           hovertemplate="%{x}: %{y:.1f}%<extra></extra>")
+        figm.update_layout(xaxis_title="Month", yaxis_title="% of annual utilisation")
+        st.plotly_chart(_sty(figm, f"Monthly profile — {pscope}  ({len(sub)} units)", h=300),
+                        use_container_width=True)
+
+        # ── Fleet composition ──
+        st.markdown("#### Fleet composition")
+        g1, g2 = st.columns([1, 1.4])
+        with g1:
             if not fleet.empty and "Leased_Owned" in fleet.columns:
                 lo = fleet["Leased_Owned"].value_counts().reset_index()
                 lo.columns = ["Type", "Count"]
-                figo = px.pie(lo, names="Type", values="Count", hole=.62,
-                              color_discrete_sequence=[ACCENT, C_SOFT, C_LLP, ACCENT2])
-                figo.update_traces(textinfo="label+percent", textfont_color="#fff")
-                st.plotly_chart(_sty(figo, "Leased vs owned"), use_container_width=True)
+                figl = px.pie(lo, names="Type", values="Count", hole=.62,
+                              color="Type",
+                              color_discrete_map={"Leased": ACCENT, "Owned": _GREEN})
+                figl.update_traces(textinfo="label+percent", textfont_color="#fff",
+                                   textfont_size=15)
+                st.plotly_chart(_sty(figl, "Owned vs leased", h=320), use_container_width=True)
+        with g2:
+            if not fleet.empty and "Aircraft_Family" in fleet.columns:
+                fam = fleet["Aircraft_Family"].value_counts().reset_index()
+                fam.columns = ["Family", "Count"]
+                cmap = {f: _fam_color(f) for f in fam["Family"]}
+                figf = px.bar(fam, x="Family", y="Count", color="Family",
+                              color_discrete_map=cmap, text="Count")
+                figf.update_traces(textposition="outside", textfont_color=TEXT,
+                                   marker_line_width=0)
+                figf.update_layout(xaxis_title="", yaxis_title="aircraft")
+                st.plotly_chart(_sty(figf, "Aircraft by type", h=320), use_container_width=True)
+
+        if not fleet.empty and "Owner" in fleet.columns:
+            own = fleet["Owner"].value_counts().reset_index()
+            own.columns = ["Owner", "Count"]
+            figo = px.bar(own, x="Count", y="Owner", orientation="h", text="Count",
+                          color_discrete_sequence=[ACCENT2])
+            figo.update_traces(textposition="outside", textfont_color=TEXT, marker_line_width=0)
+            figo.update_layout(yaxis={"categoryorder": "total ascending"},
+                               xaxis_title="aircraft", yaxis_title="")
+            st.plotly_chart(_sty(figo, "Aircraft by owner", h=max(300, len(own) * 34 + 90)),
+                            use_container_width=True)
 
         if not fleet.empty:
             j = air.merge(fleet[["Tail", "Aircraft_Family"]], left_on="Unit_ID",
