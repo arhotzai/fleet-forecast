@@ -750,20 +750,19 @@ if nav == NAV_ASK:
     else:
         st.session_state.setdefault("chat_display", [])
         st.session_state.setdefault("chat_hist", [])
-        for m in st.session_state["chat_display"]:
-            with st.chat_message(m["role"]):
-                st.markdown(m["text"])
-                if m.get("df") is not None and not m["df"].empty:
-                    st.dataframe(m["df"], use_container_width=True, hide_index=True, height=300)
-                    st.download_button("⬇ CSV", m["df"].to_csv(index=False).encode(),
-                                       "answer.csv", "text/csv", key=f"dl_{id(m)}")
+
+        # input box lives up top (not docked at the bottom of the page)
+        with st.form("ask_form", clear_on_submit=True):
+            ci, cb = st.columns([7, 1])
+            q = ci.text_input("Ask", placeholder="Ask about the projection…",
+                              label_visibility="collapsed")
+            ask = cb.form_submit_button("Ask ↑", type="primary", use_container_width=True)
         if st.session_state["chat_display"] and st.button("Clear chat"):
             st.session_state["chat_display"] = []
             st.session_state["chat_hist"] = []
             st.rerun()
 
-        q = st.chat_input("Ask about the projection…")
-        if q:
+        if ask and q:
             st.session_state["chat_display"].append({"role": "user", "text": q, "df": None})
             st.session_state["chat_hist"].append({"role": "user", "content": q})
             with st.spinner("Claude is working…"):
@@ -780,6 +779,15 @@ if nav == NAV_ASK:
                     text, df = f"Error: {exc}", None
             st.session_state["chat_display"].append({"role": "assistant", "text": text or "(no answer)", "df": df})
             st.rerun()
+
+        # conversation shows directly under the input (newest last)
+        for m in st.session_state["chat_display"]:
+            with st.chat_message(m["role"]):
+                st.markdown(m["text"])
+                if m.get("df") is not None and not m["df"].empty:
+                    st.dataframe(m["df"], use_container_width=True, hide_index=True, height=300)
+                    st.download_button("⬇ CSV", m["df"].to_csv(index=False).encode(),
+                                       "answer.csv", "text/csv", key=f"dl_{id(m)}")
 
 # ── Utilisation & Statistics ──────────────────────────────────
 if nav == NAV_UTIL:
@@ -805,10 +813,12 @@ if nav == NAV_UTIL:
             + _tile(f"{len(u):,}", "Units with assumptions", "airframe · engine · APU", C_SOFT)
             + '</div>', unsafe_allow_html=True)
 
-        def _sty(fig, title="", h=320):
+        def _sty(fig, title="", h=320, legend=False):
             fig.update_layout(template="plotly_dark", height=h, plot_bgcolor=PLOTLY_BG,
                               paper_bgcolor=PLOTLY_BG, font=dict(color=TEXT), title=title,
-                              margin=dict(l=10, r=10, t=46, b=10), showlegend=False)
+                              margin=dict(l=10, r=10, t=46, b=10), showlegend=legend,
+                              legend=dict(title="", orientation="v", x=1.01, y=1,
+                                          bgcolor="rgba(0,0,0,0)"))
             fig.update_xaxes(gridcolor=BORDER, zeroline=False)
             fig.update_yaxes(gridcolor=BORDER, zeroline=False)
             return fig
@@ -833,79 +843,102 @@ if nav == NAV_UTIL:
 
         # ── Monthly utilisation profile with a per-type filter ──
         st.markdown("#### Monthly utilisation profile")
+        st.caption("Share of the year's flying done each month — the seasonality weights that "
+                   "spread the annual **FH and FC** across the 12 months (they add up to 100%). "
+                   "It's not hours or cycles themselves, just *when* in the year they happen.")
+        # spare engines = ENGINE units not installed on any tail in the fleet
+        _installed = set()
+        for _c in ("LHENG_ESN", "RHENG_ESN"):
+            if _c in fleet.columns:
+                _installed |= set(fleet[_c].dropna().astype(str))
+        u["_spare"] = (u["Unit_Kind"] == "ENGINE") & (~u["Unit_ID"].astype(str).isin(_installed))
         _fams = sorted([f for f in u["Aircraft_Family"].dropna().unique()])
-        prof_opts = ["All units", "Airframe", "Engine", "APU"] + _fams
+        prof_opts = ["All aircraft"] + _fams + (["Spare engines"] if u["_spare"].any() else [])
         cpf, _ = st.columns([1, 2])
         pscope = cpf.selectbox("Show profile for", prof_opts, key="util_profile",
-                               help="Pick a unit kind or an aircraft type to see its own "
+                               help="Pick an aircraft type (or the spare engines) to see its "
                                     "monthly utilisation shape.")
-        if pscope == "All units":
-            sub = u
-        elif pscope in ("Airframe", "Engine", "APU"):
-            sub = u[u["Unit_Kind"] == pscope.upper()]
+        if pscope == "All aircraft":
+            sub = u[u["Unit_Kind"] == "AIRFRAME"]
+        elif pscope == "Spare engines":
+            sub = u[u["_spare"]]
         else:
             sub = u[u["Aircraft_Family"] == pscope]
         prof = (sub[_MONTHS].apply(pd.to_numeric, errors="coerce").mean() * 100).round(1)
         figm = px.bar(x=_MONTHS, y=prof.values, color_discrete_sequence=[ACCENT])
         figm.update_traces(marker_line_width=0,
-                           hovertemplate="%{x}: %{y:.1f}%<extra></extra>")
-        figm.update_layout(xaxis_title="Month", yaxis_title="% of annual utilisation")
+                           hovertemplate="%{x}: %{y:.1f}% of the year<extra></extra>")
+        _mx = float(prof.max()) if len(prof) and pd.notna(prof.max()) else 12
+        figm.update_layout(xaxis_title="Month", yaxis_title="% of annual (FH & FC)")
+        figm.update_yaxes(range=[0, _mx * 1.25], ticksuffix="%")
         st.plotly_chart(_sty(figm, f"Monthly profile — {pscope}  ({len(sub)} units)", h=300),
                         use_container_width=True)
 
-        # ── Fleet composition ──
+        # ── Fleet composition (active at a chosen date) ──
         st.markdown("#### Fleet composition")
+        fl = fleet.copy()
+        for c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
+            if c in fl.columns:
+                fl[c] = pd.to_datetime(fl[c], errors="coerce")
+        try:
+            _cfg = ds.get("Config")
+            _asof_def = pd.to_datetime(_cfg.loc[_cfg["Setting"] == "As_Of_Date", "Value"].iloc[0])
+        except Exception:
+            _asof_def = pd.Timestamp.today()
+
+        cda, _ = st.columns([1, 3])
+        asof = cda.date_input("Active fleet as of", value=_asof_def.date(), key="fleet_asof",
+                              help="Shows aircraft in service on this date: Delivery ≤ date ≤ "
+                                   "Redelivery (or Extension, if the lease was extended).")
+        _d = pd.Timestamp(asof)
+        _start = fl["Delivery_Date"] if "Delivery_Date" in fl.columns else None
+        _end = None
+        if "Redelivery_Date" in fl.columns:
+            _end = fl["Redelivery_Date"]
+        if "Extension_Date" in fl.columns:
+            _end = fl["Extension_Date"].fillna(_end) if _end is not None else fl["Extension_Date"]
+        mask = pd.Series(True, index=fl.index)
+        if _start is not None:
+            mask &= _start.isna() | (_start <= _d)
+        if _end is not None:
+            mask &= _end.isna() | (_end >= _d)
+        active = fl[mask]
+        cmap = {f: _fam_color(f) for f in fleet["Aircraft_Family"].dropna().unique()}
+        st.caption(f"**{len(active)}** aircraft active on {_d:%d %b %Y}  "
+                   f"(of {len(fl)} in the database).")
+
         g1, g2 = st.columns([1, 1.4])
         with g1:
-            if not fleet.empty and "Leased_Owned" in fleet.columns:
-                lo = fleet["Leased_Owned"].value_counts().reset_index()
+            if "Leased_Owned" in active.columns and not active.empty:
+                lo = active["Leased_Owned"].value_counts().reset_index()
                 lo.columns = ["Type", "Count"]
-                figl = px.pie(lo, names="Type", values="Count", hole=.62,
-                              color="Type",
+                figl = px.pie(lo, names="Type", values="Count", hole=.62, color="Type",
                               color_discrete_map={"Leased": ACCENT, "Owned": _GREEN})
-                figl.update_traces(textinfo="label+percent", textfont_color="#fff",
-                                   textfont_size=15)
-                st.plotly_chart(_sty(figl, "Owned vs leased", h=320), use_container_width=True)
+                figl.update_traces(textinfo="label+percent", textfont_color="#fff", textfont_size=15)
+                st.plotly_chart(_sty(figl, "Owned vs leased", h=330, legend=True),
+                                use_container_width=True)
         with g2:
-            if not fleet.empty and "Aircraft_Family" in fleet.columns:
-                fam = fleet["Aircraft_Family"].value_counts().reset_index()
+            if "Aircraft_Family" in active.columns and not active.empty:
+                fam = active["Aircraft_Family"].value_counts().reset_index()
                 fam.columns = ["Family", "Count"]
-                cmap = {f: _fam_color(f) for f in fam["Family"]}
                 figf = px.bar(fam, x="Family", y="Count", color="Family",
                               color_discrete_map=cmap, text="Count")
-                figf.update_traces(textposition="outside", textfont_color=TEXT,
-                                   marker_line_width=0)
+                figf.update_traces(textposition="outside", textfont_color=TEXT, marker_line_width=0)
                 figf.update_layout(xaxis_title="", yaxis_title="aircraft")
-                st.plotly_chart(_sty(figf, "Aircraft by type", h=320), use_container_width=True)
+                st.plotly_chart(_sty(figf, "Aircraft by type", h=330), use_container_width=True)
 
-        if not fleet.empty and "Owner" in fleet.columns:
-            own = fleet["Owner"].value_counts().reset_index()
-            own.columns = ["Owner", "Count"]
-            figo = px.bar(own, x="Count", y="Owner", orientation="h", text="Count",
-                          color_discrete_sequence=[ACCENT2])
-            figo.update_traces(textposition="outside", textfont_color=TEXT, marker_line_width=0)
-            figo.update_layout(yaxis={"categoryorder": "total ascending"},
-                               xaxis_title="aircraft", yaxis_title="")
-            st.plotly_chart(_sty(figo, "Aircraft by owner", h=max(300, len(own) * 34 + 90)),
+        # lessors / owners — stacked by aircraft type (one colour per type)
+        if "Owner" in active.columns and not active.empty:
+            ot = active.groupby(["Owner", "Aircraft_Family"]).size().reset_index(name="Count")
+            order = active["Owner"].value_counts().index.tolist()
+            figo = px.bar(ot, x="Count", y="Owner", color="Aircraft_Family", orientation="h",
+                          color_discrete_map=cmap, category_orders={"Owner": order[::-1]})
+            figo.update_traces(marker_line_width=0)
+            figo.update_layout(barmode="stack", xaxis_title="aircraft", yaxis_title="",
+                               legend_title="Type")
+            st.plotly_chart(_sty(figo, "Aircraft per owner / lessor — by type",
+                                 h=max(320, len(order) * 30 + 120), legend=True),
                             use_container_width=True)
-
-        if not fleet.empty:
-            j = air.merge(fleet[["Tail", "Aircraft_Family"]], left_on="Unit_ID",
-                          right_on="Tail", how="left")
-            if not j.empty and j["Aircraft_Family"].notna().any():
-                stats = (j.groupby("Aircraft_Family")
-                         .agg(Aircraft=("Unit_ID", "nunique"),
-                              Avg_FH=("Annual_FH", "mean"),
-                              Avg_FC=("Annual_FC", "mean"),
-                              Avg_Ratio=("FH_FC_Ratio", "mean"),
-                              Min_FH=("Annual_FH", "min"),
-                              Max_FH=("Annual_FH", "max")).reset_index())
-                for c in ["Avg_FH", "Avg_FC", "Avg_Ratio", "Min_FH", "Max_FH"]:
-                    stats[c] = stats[c].round(1)
-                st.markdown("**Utilisation statistics by aircraft family**")
-                st.markdown(_pretty_table(stats, list(stats.columns), height=300),
-                            unsafe_allow_html=True)
-                st.write("")
 
         st.markdown("**Utilisation assumptions — per unit**")
         st.caption("Annual FH/FC are spread across the year by the 12 monthly weights (they sum to "
