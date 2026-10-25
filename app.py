@@ -848,11 +848,8 @@ if nav == NAV_UTIL:
         u["Aircraft_Family"] = [(_fammap.get(uid) if k == "AIRFRAME" else None)
                                 for uid, k in zip(u["Unit_ID"], u["Unit_Kind"])]
 
-        # ── Monthly utilisation profile with a per-type filter ──
-        st.markdown("#### Monthly utilisation profile")
-        st.caption("Share of the year's flying done each month — the seasonality weights that "
-                   "spread the annual **FH and FC** across the 12 months (they add up to 100%). "
-                   "It's not hours or cycles themselves, just *when* in the year they happen.")
+        # ── Monthly utilisation — real FH + FH/FC, with flexible filters ──
+        st.markdown("#### Monthly utilisation")
         # spare engines = ENGINE units not installed on any tail in the fleet
         _installed = set()
         for _c in ("LHENG_ESN", "RHENG_ESN"):
@@ -860,26 +857,61 @@ if nav == NAV_UTIL:
                 _installed |= set(fleet[_c].dropna().astype(str))
         u["_spare"] = (u["Unit_Kind"] == "ENGINE") & (~u["Unit_ID"].astype(str).isin(_installed))
         _fams = sorted([f for f in u["Aircraft_Family"].dropna().unique()])
-        prof_opts = ["All aircraft"] + _fams + (["Spare engines"] if u["_spare"].any() else [])
-        cpf, _ = st.columns([1, 2])
-        pscope = cpf.selectbox("Show profile for", prof_opts, key="util_profile",
-                               help="Pick an aircraft type (or the spare engines) to see its "
-                                    "monthly utilisation shape.")
-        if pscope == "All aircraft":
-            sub = u[u["Unit_Kind"] == "AIRFRAME"]
-        elif pscope == "Spare engines":
-            sub = u[u["_spare"]]
+
+        cl, cp = st.columns([1, 1.4])
+        level = cl.selectbox("View by", ["Aircraft type", "Individual unit", "Spare engines"],
+                             key="util_level")
+        if level == "Aircraft type":
+            pick = cp.selectbox("Aircraft type", ["All aircraft"] + _fams, key="util_pick_type")
+            sub = u[u["Unit_Kind"] == "AIRFRAME"] if pick == "All aircraft" \
+                else u[u["Aircraft_Family"] == pick]
+            label = pick
+        elif level == "Spare engines":
+            spares = sorted(u.loc[u["_spare"], "Unit_ID"].astype(str).unique())
+            pick = cp.selectbox("Spare engine", ["All spare engines"] + spares, key="util_pick_spare")
+            sub = u[u["_spare"]] if pick == "All spare engines" \
+                else u[u["Unit_ID"].astype(str) == pick]
+            label = pick
         else:
-            sub = u[u["Aircraft_Family"] == pscope]
-        prof = (sub[_MONTHS].apply(pd.to_numeric, errors="coerce").mean() * 100).round(1)
-        figm = px.bar(x=_MONTHS, y=prof.values, color_discrete_sequence=[ACCENT])
-        figm.update_traces(marker_line_width=0,
-                           hovertemplate="%{x}: %{y:.1f}% of the year<extra></extra>")
-        _mx = float(prof.max()) if len(prof) and pd.notna(prof.max()) else 12
-        figm.update_layout(xaxis_title="Month", yaxis_title="% of annual (FH & FC)")
-        figm.update_yaxes(range=[0, _mx * 1.25], ticksuffix="%")
-        st.plotly_chart(_sty(figm, f"Monthly profile — {pscope}  ({len(sub)} units)", h=300),
-                        use_container_width=True)
+            units = sorted(u["Unit_ID"].astype(str).unique())
+            pick = cp.selectbox("Unit  (tail / engine ESN / APU s/n)", units, key="util_pick_unit")
+            sub = u[u["Unit_ID"].astype(str) == pick]
+            label = pick
+
+        if sub.empty:
+            st.info("No utilisation rows for this selection.")
+        else:
+            ann_fh = float(sub["Annual_FH"].mean())
+            ann_fc = float(sub["Annual_FC"].mean())
+            ratio = (ann_fh / ann_fc) if ann_fc else float("nan")
+            _agg = "average per unit" if len(sub) > 1 else "this unit"
+            st.markdown(
+                '<div class="kpi-row">'
+                + _tile(f"{ann_fh:,.0f}", "Annual FH", _agg, ACCENT)
+                + _tile(f"{ann_fc:,.0f}", "Annual FC", _agg, ACCENT2)
+                + _tile(f"{ratio:.2f}" if ratio == ratio else "—", "FH : FC ratio",
+                        "flight hours per cycle", C_HARD)
+                + _tile(f"{len(sub):,}", "Units in selection", "", C_SOFT)
+                + '</div>', unsafe_allow_html=True)
+
+            _w = sub[_MONTHS].apply(pd.to_numeric, errors="coerce")
+            fh_m = _w.multiply(sub["Annual_FH"].values, axis=0).mean()   # mean monthly FH
+            fc_m = _w.multiply(sub["Annual_FC"].values, axis=0).mean()   # mean monthly FC
+            ratio_m = (fh_m / fc_m.replace(0, pd.NA)).fillna(0)
+            labels = [f"{fh:,.0f} FH<br><span style='color:#8fb4ff'>{r:.2f} FH/FC</span>"
+                      for fh, r in zip(fh_m.values, ratio_m.values)]
+            figm = px.bar(x=_MONTHS, y=fh_m.values, color_discrete_sequence=[ACCENT])
+            figm.update_traces(text=labels, textposition="outside", cliponaxis=False,
+                               textfont=dict(color=TEXT, size=12), marker_line_width=0,
+                               hovertemplate="%{x}: %{y:,.0f} FH<extra></extra>")
+            _mx = float(fh_m.max()) if len(fh_m) and pd.notna(fh_m.max()) else 10
+            figm.update_layout(xaxis_title="Month", yaxis_title="Flight hours (FH) / month",
+                               bargap=.3)
+            figm.update_yaxes(range=[0, _mx * 1.3])
+            st.plotly_chart(_sty(figm, f"Monthly flight hours — {label}  ({len(sub)} units)", h=400),
+                            use_container_width=True)
+            st.caption("Left axis = **actual monthly flight hours** (annual FH spread by the "
+                       "seasonality weights). On each bar: FH that month + the FH/FC ratio.")
 
         # ── Fleet composition (active at a chosen date) ──
         st.markdown("#### Fleet composition")
@@ -922,6 +954,7 @@ if nav == NAV_UTIL:
                 figl = px.pie(lo, names="Type", values="Count", hole=.6, color="Type",
                               color_discrete_map={"Leased": ACCENT, "Owned": _GREEN})
                 figl.update_traces(textinfo="label+percent", textfont_color="#fff", textfont_size=16,
+                                   insidetextorientation="horizontal",
                                    marker=dict(line=dict(color=BG0, width=2)))
                 st.plotly_chart(_sty(figl, "Owned vs leased", h=360, legend=True),
                                 use_container_width=True)
@@ -946,8 +979,11 @@ if nav == NAV_UTIL:
             totals = active.groupby("Owner").size()
             order = totals.sort_values(ascending=False).index.tolist()
             figo = px.bar(ot, x="Count", y="Owner", color="Aircraft_Family", orientation="h",
-                          color_discrete_map=cmap, category_orders={"Owner": order[::-1]})
-            figo.update_traces(marker_line_width=0,
+                          color_discrete_map=cmap, category_orders={"Owner": order[::-1]},
+                          text="Count")
+            figo.update_traces(marker_line_width=0, textposition="inside",
+                               insidetextanchor="middle", texttemplate="%{text}",
+                               textfont=dict(color="#fff", size=11),
                                hovertemplate="<b>%{y}</b> · %{fullData.name}: %{x}<extra></extra>")
             # total count at the end of each owner's bar
             for _own, _t in totals.items():
@@ -960,15 +996,76 @@ if nav == NAV_UTIL:
                                  h=max(340, len(order) * 32 + 130), legend=True),
                             use_container_width=True)
 
-        st.markdown("**Utilisation assumptions — per unit**")
-        st.caption("Annual FH/FC are spread across the year by the 12 monthly weights (they sum to "
-                   "~100%). Evolution % grows utilisation each year; Min/Max clamp it; AOG lead-in "
-                   "ramps a unit up over its first months in service.")
-        st.markdown(_pretty_table(u, ["Unit_ID", "Unit_Kind", "Annual_FH", "Annual_FC",
-                                      "FH_FC_Ratio", "Annual_Evolution_Pct", "Min_Annual_FH",
-                                      "Max_Annual_FH", "AOG_Lead_In_Months"], height=420),
-                    unsafe_allow_html=True)
-        st.write("")
+        # ── Projected AOG (units with zero projected utilisation) ──
+        st.markdown("#### Projected AOG — zero utilisation ahead")
+        frames = proj.aircraft_frames or {}
+        if not frames:
+            st.info("Run the projection to see projected AOG.")
+        else:
+            aog_h = st.slider("Look-ahead (months)", 6, min(60, len(proj.dates)), 24, key="aog_h")
+            _a0 = proj.dates[0]
+            _cut = _a0 + pd.offsets.MonthEnd(aog_h)
+            _esn = {}
+            if not fleet.empty:
+                for _, _r in fleet.iterrows():
+                    _esn[(_r["Tail"], "LHENG")] = _r.get("LHENG_ESN")
+                    _esn[(_r["Tail"], "RHENG")] = _r.get("RHENG_ESN")
+            ac_rows, eng_rows = [], []
+            for _tail, _fr in frames.items():
+                _fr = _fr.copy()
+                _fr["DATE"] = pd.to_datetime(_fr["DATE"])
+                _nx = _fr[(_fr["DATE"] >= _a0) & (_fr["DATE"] <= _cut)]
+                if _nx.empty:
+                    continue
+                if "REG-UTIL FH" in _nx.columns:
+                    _reg = pd.to_numeric(_nx["REG-UTIL FH"], errors="coerce").fillna(0)
+                    _zm = _reg == 0
+                    if _zm.any():
+                        ac_rows.append({"Tail": _tail, "AOG months": int(_zm.sum()),
+                                        "From": _nx.loc[_zm, "DATE"].min().strftime("%b %Y"),
+                                        "To": _nx.loc[_zm, "DATE"].max().strftime("%b %Y")})
+                for _pos in ("LHENG", "RHENG"):
+                    _col = f"{_pos}-UTIL FH"
+                    if _col in _nx.columns:
+                        _e = pd.to_numeric(_nx[_col], errors="coerce").fillna(0)
+                        _em = _e == 0
+                        if _em.any():
+                            _s = _esn.get((_tail, _pos)) or f"{_tail}-{_pos}"
+                            eng_rows.append({"Engine": str(_s), "On tail": _tail,
+                                             "AOG months": int(_em.sum()),
+                                             "From": _nx.loc[_em, "DATE"].min().strftime("%b %Y")})
+            ca, ce = st.columns(2)
+            with ca:
+                st.markdown("**Aircraft projected AOG**")
+                if ac_rows:
+                    acdf = pd.DataFrame(ac_rows).sort_values("AOG months", ascending=False)
+                    figa = px.bar(acdf, x="AOG months", y="Tail", orientation="h",
+                                  text="AOG months", color_discrete_sequence=[C_LLP])
+                    figa.update_traces(textposition="outside", textfont_color=TEXT,
+                                       marker_line_width=0, cliponaxis=False)
+                    figa.update_layout(yaxis={"categoryorder": "total ascending"},
+                                       xaxis_title="months grounded", yaxis_title="")
+                    st.plotly_chart(_sty(figa, "", h=max(260, len(acdf) * 40 + 90)),
+                                    use_container_width=True)
+                else:
+                    st.success(f"No aircraft projected AOG in the next {aog_h} months. ✈️")
+            with ce:
+                st.markdown("**Engines projected AOG**")
+                if eng_rows:
+                    engdf = (pd.DataFrame(eng_rows).sort_values("AOG months", ascending=False))
+                    fige = px.bar(engdf, x="AOG months", y="Engine", orientation="h",
+                                  text="AOG months", color_discrete_sequence=[C_SOFT])
+                    fige.update_traces(textposition="outside", textfont_color=TEXT,
+                                       marker_line_width=0, cliponaxis=False)
+                    fige.update_layout(yaxis={"categoryorder": "total ascending"},
+                                       xaxis_title="months grounded", yaxis_title="")
+                    st.plotly_chart(_sty(fige, "", h=max(260, len(engdf) * 40 + 90)),
+                                    use_container_width=True)
+                else:
+                    st.success(f"No engines projected AOG in the next {aog_h} months. 🔧")
+            st.caption("A unit is flagged **AOG** for any month its projected utilisation (FH) is "
+                       "zero — e.g. during an AOG lead-in or while out of service.")
+
         st.download_button("⬇ Download utilisation assumptions (CSV)",
                            util.to_csv(index=False).encode(), "utilisation.csv", "text/csv")
 
