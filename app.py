@@ -134,15 +134,92 @@ def _secret(key, default=None):
 # Optional confidential gate: set `app_password` in Streamlit secrets to require it.
 _APP_PW = _secret("app_password")
 if _APP_PW and not st.session_state.get("_authed"):
-    with st.form("login"):
-        st.markdown("#### 🔒 Enter password to continue")
-        _pw = st.text_input("Password", type="password", label_visibility="collapsed")
-        if st.form_submit_button("Enter", type="primary"):
-            if _pw == str(_APP_PW):
-                st.session_state["_authed"] = True
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
+    _PLANE = ("M480 192H365.71L260.61 8.06A16.014 16.014 0 0 0 246.71 0h-65.5c-10.63 0-18.3 "
+              "10.17-15.38 20.39L214.86 192H112l-43.2-57.6c-3.02-4.03-7.77-6.4-12.8-6.4H16.01"
+              "C5.6 128-2.04 137.78.49 147.88L32 256 .49 364.12C-2.04 374.22 5.6 384 16.01 "
+              "384H56c5.03 0 9.78-2.37 12.8-6.4L112 320h102.86l-51.03 171.61C160.91 501.83 "
+              "168.58 512 179.21 512h65.5c5.74 0 11.04-3.08 13.9-8.06L365.71 320H480c35.35 0 "
+              "96-28.65 96-64s-60.65-64-96-64z")
+    st.markdown(f"""
+    <style>
+      .ff-hero {{ position:relative; margin:.2rem 0 1.5rem; border-radius:20px; overflow:hidden;
+        background:linear-gradient(120deg,#0a1020 0%, #10274e 50%, #0a1020 100%);
+        border:1px solid #2f4a7a; min-height:250px;
+        box-shadow:0 18px 60px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05); }}
+      .ff-hero .sky {{ position:absolute; inset:0; width:100%; height:100%; }}
+      .ff-hero .copy {{ position:relative; z-index:2; padding:2.4rem 2.8rem; max-width:640px; }}
+      .ff-hero .eyebrow {{ color:{ACCENT2}; font-size:.72rem; letter-spacing:3.5px; font-weight:700;
+        text-transform:uppercase; }}
+      .ff-hero .big {{ color:#fff; font-size:2.5rem; font-weight:800; margin:.35rem 0 .5rem;
+        line-height:1.04; letter-spacing:.3px; }}
+      .ff-hero .big .ac {{ color:{ACCENT2}; }}
+      .ff-hero .sub {{ color:#c7d2e6; font-size:1.03rem; max-width:470px; line-height:1.55; }}
+      .ff-hero .chips {{ display:flex; gap:.5rem; flex-wrap:wrap; margin-top:1.2rem; }}
+      .ff-hero .chip {{ background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.15);
+        color:#dce6f5; font-size:.76rem; font-weight:600; padding:.36rem .85rem; border-radius:999px; }}
+      .ff-arc {{ stroke-dasharray:5 9; animation:ffdash 16s linear infinite; }}
+      @keyframes ffdash {{ to {{ stroke-dashoffset:-320; }} }}
+      .ff-plane {{ animation:fffly 9s ease-in-out infinite; }}
+      @keyframes fffly {{ 0%{{transform:translate(0,0)}} 50%{{transform:translate(14px,-10px)}}
+        100%{{transform:translate(0,0)}} }}
+      .ff-star {{ animation:fftw 4s ease-in-out infinite; }}
+      @keyframes fftw {{ 0%,100%{{opacity:.25}} 50%{{opacity:.9}} }}
+      /* login card */
+      div[data-testid="stForm"] {{ background:linear-gradient(180deg,{PANEL2},{PANEL});
+        border:1px solid {BORDER}; border-radius:16px; padding:1.4rem 1.6rem;
+        box-shadow:0 10px 34px rgba(0,0,0,.4); }}
+    </style>
+    <div class="ff-hero">
+      <svg class="sky" viewBox="0 0 1200 300" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="g1" cx="82%" cy="18%" r="65%">
+            <stop offset="0%" stop-color="{ACCENT}" stop-opacity=".40"/>
+            <stop offset="100%" stop-color="{ACCENT}" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <rect width="1200" height="300" fill="url(#g1)"/>
+        <circle class="ff-star" cx="760" cy="60" r="1.6" fill="#fff"/>
+        <circle class="ff-star" cx="880" cy="110" r="2" fill="#fff" style="animation-delay:1s"/>
+        <circle class="ff-star" cx="980" cy="45" r="1.4" fill="#fff" style="animation-delay:2s"/>
+        <circle class="ff-star" cx="1080" cy="95" r="1.8" fill="#fff" style="animation-delay:.5s"/>
+        <circle class="ff-star" cx="680" cy="30" r="1.4" fill="#fff" style="animation-delay:1.5s"/>
+        <path class="ff-arc" d="M80 265 Q 650 30 1160 130" fill="none" stroke="{ACCENT2}"
+              stroke-width="2.4" stroke-linecap="round" opacity=".85"/>
+        <circle cx="80" cy="265" r="6" fill="#fff"/>
+        <circle cx="1160" cy="130" r="6.5" fill="{ACCENT2}"/>
+        <g class="ff-plane">
+          <g transform="translate(1035 150) rotate(-20) scale(.075)">
+            <path fill="#ffffff" d="{_PLANE}"/>
+          </g>
+        </g>
+      </svg>
+      <div class="copy">
+        <div class="eyebrow">Aegean · Fleet Engineering</div>
+        <div class="big">Welcome <span class="ac">aboard</span></div>
+        <div class="sub">Your fleet's maintenance future — projected, visualised, and on demand.</div>
+        <div class="chips">
+          <span class="chip">📅 Shop-visit calendar</span>
+          <span class="chip">📊 SV dashboard</span>
+          <span class="chip">🔧 LLP life status</span>
+          <span class="chip">🤖 Ask Claude</span>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _lcol = st.columns([1, 1.25, 1])
+    with _lcol[1]:
+        with st.form("login"):
+            st.markdown("#### 🔒 Enter password to continue")
+            _pw = st.text_input("Password", type="password", label_visibility="collapsed",
+                                placeholder="Password")
+            if st.form_submit_button("Enter  →", type="primary", use_container_width=True):
+                if _pw == str(_APP_PW):
+                    st.session_state["_authed"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+        st.caption("Confidential — access restricted to authorised Aegean personnel.")
     st.stop()
 
 
@@ -289,7 +366,7 @@ def _llp_table_html(df: pd.DataFrame, cap: int = 500) -> tuple[str, int]:
 
 
 def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reason",
-                  height: int = 360, cap: int = 1000) -> str:
+                  height: int = 360, cap: int = 200) -> str:
     """Render a dark, professional HTML table: sticky header, zebra rows, hover,
     tabular numbers, and colour-coded 'Reason' pills."""
     cols = [c for c in columns if c in df.columns]
@@ -407,8 +484,8 @@ with tabs[3]:
         disp = f.copy()
         disp["Date"] = pd.to_datetime(disp["Date"]).dt.strftime("%d %b %Y")
         note = f"{len(f):,} events"
-        if len(f) > 1000:
-            note += "  ·  showing the first 1,000 — use the CSV for the full list"
+        if len(f) > 200:
+            note += "  ·  previewing the first 200 — use the CSV below for the full list"
         st.caption(note)
         st.markdown(_pretty_table(disp, ["Date", "Tail", "Position", "Unit_ID", "Unit_Type",
                                          "Event", "Driver", "SLSV_at_SV", "Reason"], height=520),
@@ -556,7 +633,7 @@ with tabs[4]:
                               help="Pick one (or a few) to see the per-part life bars.")
         view = (data[data["Unit_ID"].isin(pick)] if pick else data).sort_values("ToGo")
 
-        cap = len(view) if pick else 500
+        cap = len(view) if pick else 200
         html, shown = _llp_table_html(view, cap=cap)
         note = f"{len(view):,} LLPs, nearest to limit first."
         if shown < len(view):
