@@ -14,6 +14,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_option_menu import option_menu
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from fleet_erp.ingestion.loader import load          # noqa: E402
@@ -220,40 +221,34 @@ def _run(db_bytes: bytes, llp_bytes: bytes | None):
 
 
 # ── Navigation (lives in the left sidebar, under the upload) ──
-NAV_ASK   = "💬   Ask Claude"
-NAV_DASH  = "📊   SV Dashboard"
-NAV_UTIL  = "📈   Utilisation & Stats"
-NAV_CAL   = "🗓️   SV Calendar"
-NAV_LOG   = "📋   Event Log"
-NAV_LLP   = "🔧   LLP Status"
-NAV_AC    = "🛩️   Aircraft Detail"
-NAV_EXP   = "📤   Export"
-NAV_NOTES = "ℹ️   Data Notes"
+NAV_ASK   = "Ask Claude"
+NAV_DASH  = "SV Dashboard"
+NAV_UTIL  = "Utilisation & Stats"
+NAV_CAL   = "SV Calendar"
+NAV_LOG   = "Event Log"
+NAV_LLP   = "LLP Status"
+NAV_AC    = "Aircraft Detail"
+NAV_EXP   = "Export"
+NAV_NOTES = "Data Notes"
 NAV_ITEMS = [NAV_ASK, NAV_DASH, NAV_UTIL, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
+NAV_ICONS = ["chat-dots", "bar-chart-fill", "graph-up-arrow", "calendar3", "list-task",
+             "wrench-adjustable", "airplane", "box-arrow-down", "info-circle"]
 
-st.markdown("""<style>
-  section[data-testid="stSidebar"] div[role="radiogroup"]{gap:.42rem;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-    display:flex;align-items:center;justify-content:center;      /* centred */
-    width:100%;margin:0;padding:.78rem .9rem;border-radius:12px;cursor:pointer;
-    background:#121a28;border:1px solid #232d42;transition:all .16s ease;position:relative;
-    overflow:hidden;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-    background:#17223a;border-color:#3a5fa0;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{display:none;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-    font-size:1rem!important;font-weight:600;color:#aeb9cc;letter-spacing:.3px;
-    text-align:center;margin:0!important;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover p{color:#fff;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-    background:linear-gradient(135deg,#2D7FF9 0%,#1f5fd0 100%);border-color:transparent;
-    box-shadow:0 6px 18px rgba(45,127,249,.45);}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked)::before{
-    content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#8fc4ff;}
-  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p{color:#fff!important;}
-  .nav-h{color:#8A93A6;font-size:.72rem;letter-spacing:2.5px;font-weight:700;
-    text-transform:uppercase;margin:1.1rem 0 .6rem;text-align:center;}
-</style>""", unsafe_allow_html=True)
+# professional sidebar navigation (streamlit-option-menu)
+NAV_STYLES = {
+    "container": {"padding": "4px 2px", "background-color": "transparent"},
+    "menu-title": {"color": "#8A93A6", "font-size": "12px", "font-weight": "700",
+                   "letter-spacing": "2.5px", "text-transform": "uppercase",
+                   "text-align": "center", "margin-bottom": "10px"},
+    "icon": {"color": "#8fa3c4", "font-size": "17px"},
+    "nav-link": {"font-size": "15px", "font-weight": "600", "color": "#c3cee0",
+                 "padding": "12px 16px", "margin": "5px 2px", "border-radius": "12px",
+                 "border": "1px solid #232d42", "background-color": "#111a28",
+                 "--hover-color": "#1a2740"},
+    "nav-link-selected": {"background": "linear-gradient(135deg,#2D7FF9 0%,#1f5fd0 100%)",
+                          "color": "#ffffff", "font-weight": "700", "border": "1px solid transparent",
+                          "box-shadow": "0 6px 18px rgba(45,127,249,0.45)"},
+}
 
 
 # ── Sidebar: uploads + navigation ─────────────────────────────
@@ -264,8 +259,10 @@ with st.sidebar:
     if db_file is None and _DEFAULT_DB.exists():
         st.caption("Using the bundled database — upload a file above to override.")
 
-    st.markdown("<div class='nav-h'>Navigation</div>", unsafe_allow_html=True)
-    nav = st.radio("Navigate", NAV_ITEMS, label_visibility="collapsed", key="nav")
+    st.write("")
+    nav = option_menu(menu_title="Navigation", options=NAV_ITEMS, icons=NAV_ICONS,
+                      menu_icon="grid-1x2-fill", default_index=0, styles=NAV_STYLES,
+                      key="nav")
 
     st.divider()
     run_clicked = st.button("↻ Re-run projection", type="primary", use_container_width=True)
