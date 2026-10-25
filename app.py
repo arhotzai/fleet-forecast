@@ -223,15 +223,15 @@ def _run(db_bytes: bytes, llp_bytes: bytes | None):
 # ── Navigation (lives in the left sidebar, under the upload) ──
 NAV_ASK   = "Ask Claude"
 NAV_DASH  = "SV Dashboard"
-NAV_UTIL  = "Utilisation & Stats"
+NAV_UTIL  = "Fleet & Utilisation Stats"
 NAV_CAL   = "SV Calendar"
 NAV_LOG   = "Event Log"
 NAV_LLP   = "LLP Status"
 NAV_AC    = "Aircraft Detail"
 NAV_EXP   = "Export"
 NAV_NOTES = "Data Notes"
-NAV_ITEMS = [NAV_ASK, NAV_DASH, NAV_UTIL, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
-NAV_ICONS = ["chat-dots", "bar-chart-fill", "graph-up-arrow", "calendar3", "list-task",
+NAV_ITEMS = [NAV_ASK, NAV_UTIL, NAV_DASH, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
+NAV_ICONS = ["chat-dots", "graph-up-arrow", "bar-chart-fill", "calendar3", "list-task",
              "wrench-adjustable", "airplane", "box-arrow-down", "info-circle"]
 
 # professional sidebar navigation (streamlit-option-menu)
@@ -313,6 +313,18 @@ _n_llp = int((events["Trigger"] == "LLP_REPLACEMENT").sum()) if not events.empty
 def _tile(value, label, sub="", color=ACCENT):
     return (f'<div class="kpi" style="--c:{color}"><div class="v">{value}</div>'
             f'<div class="l">{label}</div><div class="s">{sub}</div></div>')
+
+
+def _tile_break(label, items, color=ACCENT, total=None):
+    """A KPI card whose body is a compact 'label … count' breakdown list."""
+    head = (f'<div class="v" style="font-size:1.7rem">{total}</div>'
+            if total is not None else "")
+    rows = "".join(
+        f'<div style="display:flex;justify-content:space-between;gap:1rem;font-size:.82rem;'
+        f'color:{TEXT};line-height:1.7"><span style="color:#aab4c6">{k}</span>'
+        f'<b>{v}</b></div>' for k, v in items)
+    return (f'<div class="kpi" style="--c:{color}">{head}'
+            f'<div class="l" style="margin-bottom:.35rem">{label}</div>{rows}</div>')
 
 
 def _blank(df: pd.DataFrame) -> pd.DataFrame:
@@ -455,13 +467,30 @@ def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reaso
             f'<tbody>{body}</tbody></table></div>')
 
 
+# ── Global fleet cards (fleet composition only) ───────────────
+_famc = fleet["Aircraft_Family"].value_counts() if not fleet.empty else pd.Series(dtype=int)
+_util_g = ds.get("Utilization")
+_inst_e, _inst_a = set(), set()
+if not fleet.empty:
+    for _c in ("LHENG_ESN", "RHENG_ESN"):
+        if _c in fleet.columns:
+            _inst_e |= set(fleet[_c].dropna().astype(str))
+    if "APU_SN" in fleet.columns:
+        _inst_a = set(fleet["APU_SN"].dropna().astype(str))
+if _util_g is not None and not _util_g.empty:
+    _eng_u = _util_g[_util_g["Unit_Kind"] == "ENGINE"]["Unit_ID"].astype(str)
+    _apu_u = _util_g[_util_g["Unit_Kind"] == "APU"]["Unit_ID"].astype(str)
+    _n_spare_eng = int((~_eng_u.isin(_inst_e)).sum())
+    _n_spare_apu = int((~_apu_u.isin(_inst_a)).sum())
+else:
+    _n_spare_eng = _n_spare_apu = 0
+
 st.markdown(
-    '<div class="kpi-row">'
-    + _tile(f"{_n_ac}", "Aircraft", "in fleet", ACCENT)
-    + _tile(f"{_n_units}", "Units projected", "airframe · engine · APU", ACCENT2)
-    + _tile(f"{len(events):,}", "Projected events", f"over {len(proj.dates)} months", C_HARD)
-    + _tile(f"{len(next12):,}", "Next 12 months", "shop visits due", C_SOFT)
-    + _tile(f"{_n_llp:,}", "LLP replacements", "life-limited parts", C_LLP)
+    '<div style="display:grid;grid-template-columns:0.9fr 1.7fr 1.2fr;gap:.8rem;margin:.2rem 0 1rem;">'
+    + _tile(f"{_n_ac}", "Total aircraft", "in fleet", ACCENT)
+    + _tile_break("Aircraft by type", list(_famc.items()), ACCENT2)
+    + _tile_break("Spares", [("Spare engines", _n_spare_eng), ("Spare APUs", _n_spare_apu)],
+                  C_SOFT, total=_n_spare_eng + _n_spare_apu)
     + '</div>', unsafe_allow_html=True)
 
 # ── SV Calendar (SV_PLAN_v1) ──────────────────────────────────
@@ -805,14 +834,6 @@ if nav == NAV_UTIL:
                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         air = u[u["Unit_Kind"] == "AIRFRAME"]
 
-        st.markdown(
-            '<div class="kpi-row">'
-            + _tile(f"{air['Annual_FH'].sum():,.0f}", "Fleet annual FH", "airframe total / year", ACCENT)
-            + _tile(f"{air['Annual_FH'].mean():,.0f}", "Avg FH / aircraft", "per year", ACCENT2)
-            + _tile(f"{u['FH_FC_Ratio'].mean():.2f}", "Avg FH : FC", "hours per cycle", C_HARD)
-            + _tile(f"{len(u):,}", "Units with assumptions", "airframe · engine · APU", C_SOFT)
-            + '</div>', unsafe_allow_html=True)
-
         def _sty(fig, title="", h=320, legend=False):
             fig.update_layout(template="plotly_dark", height=h, plot_bgcolor=PLOTLY_BG,
                               paper_bgcolor=PLOTLY_BG, font=dict(color=TEXT), title=title,
@@ -843,14 +864,10 @@ if nav == NAV_UTIL:
                 return _BLUE
             return MUTED
 
-        # map airframe utilisation rows to their aircraft family (via the tail)
+        # aircraft family per airframe row; spare engines; spare engine types
         _fammap = fleet.set_index("Tail")["Aircraft_Family"].to_dict() if not fleet.empty else {}
         u["Aircraft_Family"] = [(_fammap.get(uid) if k == "AIRFRAME" else None)
                                 for uid, k in zip(u["Unit_ID"], u["Unit_Kind"])]
-
-        # ── Monthly utilisation — real FH + FH/FC, with flexible filters ──
-        st.markdown("#### Monthly utilisation")
-        # spare engines = ENGINE units not installed on any tail in the fleet
         _installed = set()
         for _c in ("LHENG_ESN", "RHENG_ESN"):
             if _c in fleet.columns:
@@ -858,6 +875,8 @@ if nav == NAV_UTIL:
         u["_spare"] = (u["Unit_Kind"] == "ENGINE") & (~u["Unit_ID"].astype(str).isin(_installed))
         _fams = sorted([f for f in u["Aircraft_Family"].dropna().unique()])
 
+        # ── Monthly utilisation — real FH + FH/FC, with flexible filters ──
+        st.markdown("#### Monthly utilisation")
         cl, cp = st.columns([1, 1.4])
         level = cl.selectbox("View by", ["Aircraft type", "Individual unit", "Spare engines"],
                              key="util_level")
@@ -992,7 +1011,10 @@ if nav == NAV_UTIL:
                             use_container_width=True)
 
         # ── Projected AOG (units with zero projected utilisation) ──
-        st.markdown("#### Projected AOG — zero utilisation ahead")
+        st.markdown("#### Projected AOG — when units are grounded (no flying)")
+        st.caption("Each bar is the **window a unit is projected to be grounded** (zero flight "
+                   "hours) — e.g. an AOG lead-in or an out-of-service gap. Longer bar = more "
+                   "months on the ground. Hover for the exact period.")
         frames = proj.aircraft_frames or {}
         if not frames:
             st.info("Run the projection to see projected AOG.")
@@ -1005,6 +1027,12 @@ if nav == NAV_UTIL:
                 for _, _r in fleet.iterrows():
                     _esn[(_r["Tail"], "LHENG")] = _r.get("LHENG_ESN")
                     _esn[(_r["Tail"], "RHENG")] = _r.get("RHENG_ESN")
+
+            def _span(mask, dates):
+                z = dates[mask]
+                start = z.min().to_period("M").to_timestamp()
+                return start, z.max(), int(mask.sum())
+
             ac_rows, eng_rows = [], []
             for _tail, _fr in frames.items():
                 _fr = _fr.copy()
@@ -1013,53 +1041,55 @@ if nav == NAV_UTIL:
                 if _nx.empty:
                     continue
                 if "REG-UTIL FH" in _nx.columns:
-                    _reg = pd.to_numeric(_nx["REG-UTIL FH"], errors="coerce").fillna(0)
-                    _zm = _reg == 0
+                    _zm = pd.to_numeric(_nx["REG-UTIL FH"], errors="coerce").fillna(0) == 0
                     if _zm.any():
-                        ac_rows.append({"Tail": _tail, "AOG months": int(_zm.sum()),
-                                        "From": _nx.loc[_zm, "DATE"].min().strftime("%b %Y"),
-                                        "To": _nx.loc[_zm, "DATE"].max().strftime("%b %Y")})
+                        s, e, n = _span(_zm, _nx["DATE"])
+                        ac_rows.append({"Tail": _tail, "Start": s, "End": e, "months": n,
+                                        "From": s.strftime("%b %Y"), "To": e.strftime("%b %Y")})
                 for _pos in ("LHENG", "RHENG"):
                     _col = f"{_pos}-UTIL FH"
                     if _col in _nx.columns:
-                        _e = pd.to_numeric(_nx[_col], errors="coerce").fillna(0)
-                        _em = _e == 0
+                        _em = pd.to_numeric(_nx[_col], errors="coerce").fillna(0) == 0
                         if _em.any():
-                            _s = _esn.get((_tail, _pos)) or f"{_tail}-{_pos}"
-                            eng_rows.append({"Engine": str(_s), "On tail": _tail,
-                                             "AOG months": int(_em.sum()),
-                                             "From": _nx.loc[_em, "DATE"].min().strftime("%b %Y")})
+                            s, e, n = _span(_em, _nx["DATE"])
+                            _sn = _esn.get((_tail, _pos)) or f"{_tail}-{_pos}"
+                            eng_rows.append({"Engine": str(_sn), "Start": s, "End": e, "months": n,
+                                             "From": s.strftime("%b %Y"), "To": e.strftime("%b %Y")})
+
+            AMBER, REDS = "#F6A609", "#E06666"
+            st.markdown(
+                '<div class="kpi-row">'
+                + _tile(f"{len(ac_rows)}", "Aircraft grounded", f"in next {aog_h} months", AMBER)
+                + _tile(f"{len({r['Engine'] for r in eng_rows})}", "Engines grounded",
+                        f"in next {aog_h} months", REDS)
+                + _tile(f"{sum(r['months'] for r in ac_rows):,}", "Aircraft-months", "on the ground", C_SOFT)
+                + _tile(f"{len(frames) - len(ac_rows)}", "Flying throughout", "no AOG", C_HARD)
+                + '</div>', unsafe_allow_html=True)
+
+            def _aog_timeline(rows, ycol, title, color):
+                df = pd.DataFrame(rows).sort_values("Start")
+                fig = px.timeline(df, x_start="Start", x_end="End", y=ycol,
+                                  color_discrete_sequence=[color], custom_data=["months", "From", "To"])
+                fig.update_yaxes(autorange="reversed", title="")
+                fig.update_traces(marker_line_width=0, opacity=.95,
+                                  hovertemplate="<b>%{y}</b><br>%{customdata[0]} months grounded"
+                                                "<br>%{customdata[1]} → %{customdata[2]}<extra></extra>")
+                fig.update_layout(xaxis_title="")
+                return _sty(fig, title, h=max(240, len(df) * 46 + 110))
+
             ca, ce = st.columns(2)
             with ca:
-                st.markdown("**Aircraft projected AOG**")
                 if ac_rows:
-                    acdf = pd.DataFrame(ac_rows).sort_values("AOG months", ascending=False)
-                    figa = px.bar(acdf, x="AOG months", y="Tail", orientation="h",
-                                  text="AOG months", color_discrete_sequence=[C_LLP])
-                    figa.update_traces(textposition="outside", textfont_color=TEXT,
-                                       marker_line_width=0, cliponaxis=False)
-                    figa.update_layout(yaxis={"categoryorder": "total ascending"},
-                                       xaxis_title="months grounded", yaxis_title="")
-                    st.plotly_chart(_sty(figa, "", h=max(260, len(acdf) * 40 + 90)),
+                    st.plotly_chart(_aog_timeline(ac_rows, "Tail", "Aircraft — grounded period", AMBER),
                                     use_container_width=True)
                 else:
-                    st.success(f"No aircraft projected AOG in the next {aog_h} months. ✈️")
+                    st.success(f"✈️ No aircraft projected AOG in the next {aog_h} months.")
             with ce:
-                st.markdown("**Engines projected AOG**")
                 if eng_rows:
-                    engdf = (pd.DataFrame(eng_rows).sort_values("AOG months", ascending=False))
-                    fige = px.bar(engdf, x="AOG months", y="Engine", orientation="h",
-                                  text="AOG months", color_discrete_sequence=[C_SOFT])
-                    fige.update_traces(textposition="outside", textfont_color=TEXT,
-                                       marker_line_width=0, cliponaxis=False)
-                    fige.update_layout(yaxis={"categoryorder": "total ascending"},
-                                       xaxis_title="months grounded", yaxis_title="")
-                    st.plotly_chart(_sty(fige, "", h=max(260, len(engdf) * 40 + 90)),
+                    st.plotly_chart(_aog_timeline(eng_rows, "Engine", "Engines — grounded period", REDS),
                                     use_container_width=True)
                 else:
-                    st.success(f"No engines projected AOG in the next {aog_h} months. 🔧")
-            st.caption("A unit is flagged **AOG** for any month its projected utilisation (FH) is "
-                       "zero — e.g. during an AOG lead-in or while out of service.")
+                    st.success(f"🔧 No engines projected AOG in the next {aog_h} months.")
 
         st.download_button("⬇ Download utilisation assumptions (CSV)",
                            util.to_csv(index=False).encode(), "utilisation.csv", "text/csv")
