@@ -919,14 +919,9 @@ if nav == NAV_UTIL:
         for c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
             if c in fl.columns:
                 fl[c] = pd.to_datetime(fl[c], errors="coerce")
-        try:
-            _cfg = ds.get("Config")
-            _asof_def = pd.to_datetime(_cfg.loc[_cfg["Setting"] == "As_Of_Date", "Value"].iloc[0])
-        except Exception:
-            _asof_def = pd.Timestamp.today()
-
         cda, _ = st.columns([1, 3])
-        asof = cda.date_input("Active fleet as of", value=_asof_def.date(), key="fleet_asof",
+        asof = cda.date_input("Active fleet as of", value=pd.Timestamp.today().date(),
+                              key="fleet_asof",
                               help="Shows aircraft in service on this date: Delivery ≤ date ≤ "
                                    "Redelivery (or Extension, if the lease was extended).")
         _d = pd.Timestamp(asof)
