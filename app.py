@@ -14,7 +14,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_option_menu import option_menu
+try:
+    from streamlit_option_menu import option_menu
+    _HAS_OPTION_MENU = True
+except Exception:          # library not installed (e.g. offline corporate PC)
+    option_menu = None
+    _HAS_OPTION_MENU = False
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from fleet_erp.ingestion.loader import load          # noqa: E402
@@ -250,6 +255,25 @@ NAV_STYLES = {
                           "box-shadow": "0 6px 18px rgba(45,127,249,0.45)"},
 }
 
+# fallback nav styling (used when streamlit-option-menu isn't installed)
+st.markdown("""<style>
+  section[data-testid="stSidebar"] div[role="radiogroup"]{gap:.42rem;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+    display:flex;align-items:center;justify-content:center;width:100%;margin:0;
+    padding:.75rem .9rem;border-radius:12px;cursor:pointer;background:#121a28;
+    border:1px solid #232d42;transition:all .16s ease;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+    background:#17223a;border-color:#3a5fa0;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{display:none;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+    font-size:1rem!important;font-weight:600;color:#aeb9cc;text-align:center;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+    background:linear-gradient(135deg,#2D7FF9,#1f5fd0);border-color:transparent;}
+  section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p{color:#fff!important;}
+  .nav-h{color:#8A93A6;font-size:.72rem;letter-spacing:2.5px;font-weight:700;
+    text-transform:uppercase;margin:1rem 0 .55rem;text-align:center;}
+</style>""", unsafe_allow_html=True)
+
 
 # ── Sidebar: uploads + navigation ─────────────────────────────
 with st.sidebar:
@@ -260,9 +284,13 @@ with st.sidebar:
         st.caption("Using the bundled database — upload a file above to override.")
 
     st.write("")
-    nav = option_menu(menu_title="Navigation", options=NAV_ITEMS, icons=NAV_ICONS,
-                      menu_icon="grid-1x2-fill", default_index=0, styles=NAV_STYLES,
-                      key="nav")
+    if _HAS_OPTION_MENU:
+        nav = option_menu(menu_title="Navigation", options=NAV_ITEMS, icons=NAV_ICONS,
+                          menu_icon="grid-1x2-fill", default_index=0, styles=NAV_STYLES,
+                          key="nav")
+    else:
+        st.markdown("<div class='nav-h'>Navigation</div>", unsafe_allow_html=True)
+        nav = st.radio("Navigate", NAV_ITEMS, label_visibility="collapsed", key="nav")
 
     st.divider()
     run_clicked = st.button("↻ Re-run projection", type="primary", use_container_width=True)
@@ -793,8 +821,18 @@ if nav == NAV_ASK:
                "“list engine LLP replacements due before 2030 by tail” · "
                "“how many APU shop visits per year?” · “what's due on SX-NEA in the next 18 months?”")
     import os
-    from fleet_erp.ui import assistant as _assistant
-    import anthropic
+    try:
+        from fleet_erp.ui import assistant as _assistant
+        import anthropic
+        _ASK_OK = True
+    except Exception:
+        _ASK_OK = False
+
+    if not _ASK_OK:
+        st.info("💬 **Ask Claude** needs the `anthropic` library, which isn't installed in this "
+                "environment. Everything else in the app works normally — this tab is just hidden "
+                "here. (It's available on the online version.)")
+        st.stop()
 
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or _secret("ANTHROPIC_API_KEY")
                or st.session_state.get("anthropic_key"))
