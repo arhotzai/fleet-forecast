@@ -1055,12 +1055,12 @@ if nav == NAV_UTIL:
         if "Aircraft_Family" in active.columns and not active.empty:
             fam = active["Aircraft_Family"].value_counts().reset_index()
             fam.columns = ["Family", "Count"]
-            figf = px.bar(fam, x="Family", y="Count", color="Family",
-                          color_discrete_map=cmap, text="Count")
-            figf.update_traces(textposition="outside", textfont=dict(color=TEXT, size=16),
-                               marker_line_width=0, cliponaxis=False,
+            figf = px.bar(fam, x="Family", y="Count", text="Count")
+            figf.update_traces(marker_color=[cmap.get(f, ACCENT) for f in fam["Family"]],
+                               textposition="outside", textfont=dict(color=TEXT, size=16),
+                               marker_line_width=0, cliponaxis=False, width=0.62,
                                hovertemplate="<b>%{x}</b>: %{y} aircraft<extra></extra>")
-            figf.update_layout(xaxis_title="", yaxis_title="aircraft", bargap=.28)
+            figf.update_layout(xaxis_title="", yaxis_title="aircraft", bargap=.35)
             figf.update_yaxes(range=[0, float(fam["Count"].max()) * 1.18])
             figf.update_xaxes(tickangle=-20)
             st.plotly_chart(_sty(figf, "Aircraft by type", h=440), use_container_width=True)
