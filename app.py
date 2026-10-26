@@ -467,44 +467,61 @@ def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reaso
             f'<tbody>{body}</tbody></table></div>')
 
 
-# ── Global fleet cards (fleet composition only) ───────────────
-_famc = fleet["Aircraft_Family"].value_counts() if not fleet.empty else pd.Series(dtype=int)
-# spares = Components units with no installed tail; group engines by NEO/CEO/ATR
-_comp_g = ds.get("Components")
+# ── Global fleet cards: clean counts by big category (Total / NEO / CEO / ATR) ──
+_NEO_C, _CEO_C, _ATR_C = "#16489C", "#2D7FF9", "#3FB06B"
+
+
+def _big_cat(name):
+    f = str(name).upper()
+    if "NEO" in f:
+        return "NEO"
+    if "CEO" in f:
+        return "CEO"
+    if "ATR" in f or "DASH" in f or "DH" in f or "Q400" in f or "D100" in f:
+        return "ATR"
+    return "Other"
+
+
+# aircraft by big category
+_ac_cat = {"NEO": 0, "CEO": 0, "ATR": 0}
+if not fleet.empty:
+    for _fam, _cnt in fleet["Aircraft_Family"].value_counts().items():
+        _c = _big_cat(_fam)
+        if _c in _ac_cat:
+            _ac_cat[_c] += int(_cnt)
+
+# spare engines by big category (engine model → category); untyped excluded
 _ENG_CAT = {"PW1100": "NEO", "PW1500": "NEO", "LEAP": "NEO",
             "V2500": "CEO", "CFM56": "CEO", "PW127": "ATR"}
-_spare_items, _n_spare_eng, _n_spare_apu = [], 0, 0
+_sp_cat = {"NEO": 0, "CEO": 0, "ATR": 0}
+_n_spare_apu = 0
+_comp_g = ds.get("Components")
 if _comp_g is not None and not _comp_g.empty and "Installed_On_Tail" in _comp_g.columns:
     _free = (_comp_g["Installed_On_Tail"].isna()
              | _comp_g["Installed_On_Tail"].astype(str).str.strip().isin(["", "nan", "None"]))
     _eng_sp = _comp_g[(_comp_g["Unit_Kind"] == "ENGINE") & _free]
-    _apu_sp = _comp_g[(_comp_g["Unit_Kind"] == "APU") & _free]
-    _n_spare_eng, _n_spare_apu = len(_eng_sp), len(_apu_sp)
-    _vc = _eng_sp["Unit_Type"].value_counts(dropna=False)
-    _order = ["PW1100", "PW1500", "LEAP", "V2500", "CFM56", "PW127"]
-    _seen = set()
-    for _et in _order:
-        if _et in _vc.index:
-            _spare_items.append((f"{_ENG_CAT.get(_et, _et)} · {_et}", int(_vc[_et])))
-            _seen.add(_et)
-    for _et, _cnt in _vc.items():
-        if pd.notna(_et) and str(_et).strip() not in ("", "nan", "None") and _et not in _seen:
-            _spare_items.append((f"{_ENG_CAT.get(str(_et), str(_et))} · {_et}", int(_cnt)))
-    _unspec = int(sum(int(_vc[k]) for k in _vc.index
-                      if pd.isna(k) or str(k).strip() in ("", "nan", "None")))
-    if _unspec:
-        _spare_items.append(("Engines · no type set", _unspec))
-    if _n_spare_apu:
-        _spare_items.append(("APU", int(_n_spare_apu)))
-if not _spare_items:
-    _spare_items = [("Spare engines", _n_spare_eng), ("Spare APUs", _n_spare_apu)]
+    _n_spare_apu = int(((_comp_g["Unit_Kind"] == "APU") & _free).sum())
+    for _et, _cnt in _eng_sp["Unit_Type"].value_counts().items():
+        _c = _ENG_CAT.get(str(_et))
+        if _c in _sp_cat:
+            _sp_cat[_c] += int(_cnt)
 
+# Row 1 — aircraft: Total fleet + NEO / CEO / ATR
 st.markdown(
-    '<div style="display:grid;grid-template-columns:0.85fr 1.6fr 1.4fr;gap:.8rem;margin:.2rem 0 1rem;">'
-    + _tile(f"{_n_ac}", "Total aircraft", "in fleet", ACCENT)
-    + _tile_break("Aircraft by type", list(_famc.items()), ACCENT2)
-    + _tile_break("Spare engines &amp; APUs", _spare_items, C_SOFT,
-                  total=_n_spare_eng + _n_spare_apu)
+    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.8rem;margin:.2rem 0 .6rem;">'
+    + _tile(f"{_n_ac}", "Total fleet", "aircraft", ACCENT)
+    + _tile(f"{_ac_cat['NEO']}", "NEO", "aircraft", _NEO_C)
+    + _tile(f"{_ac_cat['CEO']}", "CEO", "aircraft", _CEO_C)
+    + _tile(f"{_ac_cat['ATR']}", "ATR", "aircraft", _ATR_C)
+    + '</div>', unsafe_allow_html=True)
+
+# Row 2 — spare engines by category + spare APUs
+st.markdown(
+    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.8rem;margin:0 0 1rem;">'
+    + _tile(f"{_sp_cat['NEO']}", "NEO spare engines", "PW1100", _NEO_C)
+    + _tile(f"{_sp_cat['CEO']}", "CEO spare engines", "V2500", _CEO_C)
+    + _tile(f"{_sp_cat['ATR']}", "ATR spare engines", "PW127", _ATR_C)
+    + _tile(f"{_n_spare_apu}", "Spare APUs", "all types", C_SOFT)
     + '</div>', unsafe_allow_html=True)
 
 # ── SV Calendar (SV_PLAN_v1) ──────────────────────────────────
@@ -896,8 +913,9 @@ if nav == NAV_UTIL:
                              key="util_level")
         if level == "Aircraft type":
             pick = cp.selectbox("Aircraft type", ["All aircraft"] + _fams, key="util_pick_type")
-            sub = u[u["Unit_Kind"] == "AIRFRAME"] if pick == "All aircraft" \
-                else u[u["Aircraft_Family"] == pick]
+            # "All aircraft" = airframes that belong to the fleet (exclude test/non-fleet rows)
+            sub = u[(u["Unit_Kind"] == "AIRFRAME") & u["Aircraft_Family"].notna()] \
+                if pick == "All aircraft" else u[u["Aircraft_Family"] == pick]
             label = pick
         elif level == "Spare engines":
             spares = sorted(u.loc[u["_spare"], "Unit_ID"].astype(str).unique())
@@ -974,18 +992,26 @@ if nav == NAV_UTIL:
         st.caption(f"**{len(active)}** aircraft active on {_d:%d %b %Y}  "
                    f"(of {len(fl)} in the database).")
 
-        dc1, _dc2 = st.columns([1, 1.1])
-        with dc1:
+        _, dcm, _ = st.columns([1, 2, 1])
+        with dcm:
             if "Leased_Owned" in active.columns and not active.empty:
                 lo = active["Leased_Owned"].value_counts().reset_index()
                 lo.columns = ["Type", "Count"]
-                figl = px.pie(lo, names="Type", values="Count", hole=.6, color="Type",
+                figl = px.pie(lo, names="Type", values="Count", hole=.64, color="Type",
                               color_discrete_map={"Leased": ACCENT, "Owned": _GREEN})
                 figl.update_traces(textinfo="label+percent", textfont_color="#fff", textfont_size=16,
-                                   insidetextorientation="horizontal",
-                                   marker=dict(line=dict(color=BG0, width=2)))
-                st.plotly_chart(_sty(figl, "Owned vs leased", h=360, legend=True),
-                                use_container_width=True)
+                                   insidetextorientation="horizontal", pull=[0.02, 0.02],
+                                   sort=False, rotation=90, domain=dict(x=[0.12, 0.88], y=[0, 1]),
+                                   marker=dict(line=dict(color=BG0, width=3)),
+                                   hovertemplate="%{label}: %{value} aircraft  (%{percent})<extra></extra>")
+                figl = _sty(figl, "Owned vs leased", h=420, legend=True)
+                figl.update_layout(legend=dict(orientation="h", y=-0.02, x=0.5, xanchor="center",
+                                               title=""))
+                figl.add_annotation(text=f"<b>{len(active)}</b><br>"
+                                         f"<span style='font-size:12px;color:#8A93A6'>aircraft</span>",
+                                    showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper",
+                                    font=dict(color="#fff", size=26))
+                st.plotly_chart(figl, use_container_width=True)
 
         # aircraft by type — full width, taller, number labels never clipped
         if "Aircraft_Family" in active.columns and not active.empty:
