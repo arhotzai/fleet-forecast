@@ -368,11 +368,11 @@ def _apply_resets(live, reset_now, hard_children, soft_children,
                 yrs = e.get("soft_years")
                 if yrs is not None and not np.isnan(yrs):
                     months = int(round(yrs * 12))
-                    reason = f"Soft link — done with {src_name} SV (within {months} months of its own limit)"
+                    reason = f"Performed earlier with {src_name} SV — soft link (within {months} months of its limit)"
                 else:
-                    reason = f"Soft link — done with {src_name} SV (near its limit)"
+                    reason = f"Performed earlier with {src_name} SV — soft link"
             else:
-                reason = f"Hard link — always done with {src_name} SV"
+                reason = f"Performed earlier with {src_name} SV — hard link"
         out_events.append({
             "Date": date, "Tail": tail or "SPARE", "Position": position,
             "Unit_ID": unit_id, "Unit_Kind": kind, "Unit_Type": unit_type,
@@ -397,12 +397,18 @@ def run(ds: Dataset) -> Projection:
     fleet = ds.get("Fleet")
     units = ds.get("Components")
 
-    # horizon end = latest redelivery, else default
+    # horizon end = latest in-service date across the fleet. Period 1 runs to
+    # Redelivery; if a lease is extended (Extension_Date), Period 2 runs to that.
     end = as_of + relativedelta(months=DEFAULT_HORIZON_MONTHS)
-    if not fleet.empty and "Redelivery_Date" in fleet.columns:
-        red = pd.to_datetime(fleet["Redelivery_Date"], errors="coerce").dropna()
-        if not red.empty:
-            end = max(end, red.max() + pd.offsets.MonthEnd(0))
+    if not fleet.empty:
+        _ends = []
+        for _c in ("Redelivery_Date", "Extension_Date"):
+            if _c in fleet.columns:
+                _ends.append(pd.to_datetime(fleet[_c], errors="coerce"))
+        if _ends:
+            _all = pd.concat(_ends).dropna()
+            if not _all.empty:
+                end = max(end, _all.max() + pd.offsets.MonthEnd(0))
 
     dates = list(pd.date_range(as_of, end, freq="ME"))
 
@@ -472,6 +478,22 @@ def run(ds: Dataset) -> Projection:
                               init_status, llp_by_unit.get(uid, []),
                               links_by_type.get(ut, []), llp_rules.get(ut),
                               dates, out_events, out_status, out_series)
+
+    # 1b) installed propellers (fly with the aircraft; LH/RH)
+    if not units.empty:
+        for _, r in units.iterrows():
+            uid = _cid(r)
+            if uid in installed or str(r.get("Unit_Kind") or "") != "PROPELLER":
+                continue
+            tail = str(r.get("Installed_On_Tail") or "").strip()
+            if not tail:
+                continue
+            installed.add(uid)
+            ut = str(r.get("Unit_Type") or "")
+            _project_unit(uid, ut, "PROPELLER", tail, str(r.get("Position") or ""),
+                          events_by_type.get(ut, []), util_map.get(uid),
+                          init_status, [], links_by_type.get(ut, []), None,
+                          dates, out_events, out_status, out_series)
 
     # 2) spares (units in the Units sheet not installed on any aircraft)
     if not units.empty:

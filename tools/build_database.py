@@ -28,7 +28,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 # Controlled vocabularies (dropdown sources)
 # ─────────────────────────────────────────────────────────────
 ENUMS: dict[str, list[str]] = {
-    "UnitKind":              ["AIRFRAME", "ENGINE", "APU"],
+    "UnitKind":              ["AIRFRAME", "ENGINE", "APU", "PROPELLER"],
     "Driver":                ["FH", "FC", "CALENDAR_MONTHS", "CALENDAR_DAYS"],
     "SoftThresholdType":     ["PCT", "ABS_FH", "ABS_FC", "ABS_MONTHS", "NONE"],
     "RedeliveryMinLifeType": ["FH", "FC", "MONTHS", "NONE"],
@@ -36,7 +36,7 @@ ENUMS: dict[str, list[str]] = {
     "WorkscopeClass":        ["LIGHT", "HEAVY", "LLP_REPLACEMENT", "NONE"],
     "AircraftStatus":        ["ACTIVE", "AOG", "STORED"],
     "LeasedOwned":           ["Leased", "Owned"],
-    "Position":              ["LHENG", "RHENG", "APU", "SPARE"],
+    "Position":              ["LHENG", "RHENG", "APU", "LHPROP", "RHPROP", "SPARE"],
     "ProjectionEndMode":     ["REDELIVERY", "FIXED_DATE", "HORIZON_MONTHS"],
     "ScopeType":             ["ALL", "CATEGORY", "COMPONENT"],
     "MethodType":            ["MR_STANDARD", "MR_FH_FC_RATIO", "PBH_FLAT", "TM_WORKSCOPE", "EOL_PRORATA"],
@@ -149,6 +149,13 @@ def _strip_pos(name: str) -> str:
     return n or name
 
 
+def _drop_driver_suffix(name: str) -> str:
+    """Drop a trailing FH/FC driver token from a sub-event name — the driver is a
+    separate field now. 'HSI-FH' -> 'HSI', 'RGB FH' -> 'RGB', but bare 'FH'/'FC'
+    main counters are left intact (no leading separator to match)."""
+    return re.sub(r"[-\s]+F[HC]$", "", str(name)).strip()
+
+
 def _clean_name(name: str) -> str:
     """Drop a trailing 'SLSV' and any dangling separators: '6Y-SLSV' -> '6Y'."""
     n = re.sub(r"\s*SLSV$", "", str(name))
@@ -188,7 +195,10 @@ def parse_templates(xl: pd.ExcelFile):
                 key = re.sub(r"\s*LIMIT$", "", nm)
                 if is_eng or is_apu:
                     key = re.sub(r"^(ENG1|ENG2|APU)[- ]?", "", key)
-                limit_lookup[_clean_name(key).upper()] = float(lim)
+                _k = _clean_name(key)
+                if is_eng or is_apu:
+                    _k = _drop_driver_suffix(_k)
+                limit_lookup[_k.upper()] = float(lim)
 
         seen = set()
         for _, r in df.iterrows():
@@ -202,8 +212,9 @@ def parse_templates(xl: pd.ExcelFile):
             if not (is_eng or is_apu) and re.match(r"^(ENG1|ENG2|APU)\b", nm.upper()):
                 continue
             if is_eng or is_apu:
-                ev_name = _strip_pos(nm)                       # ENG1/ENG2 collapse to one
-                base_key = _clean_name(re.sub(r"^(ENG1|ENG2|APU)[- ]?", "", nm)).upper()
+                ev_name = _drop_driver_suffix(_strip_pos(nm))  # collapse pos; drop FH/FC token
+                base_key = _drop_driver_suffix(
+                    _clean_name(re.sub(r"^(ENG1|ENG2|APU)[- ]?", "", nm))).upper()
             else:
                 ev_name = _clean_name(nm)
                 base_key = ev_name.upper()
@@ -217,7 +228,7 @@ def parse_templates(xl: pd.ExcelFile):
             for k in ("LINKED SV1", "LINKED SV2", "LINKED SV3"):
                 lv = _clean(r.get(k))
                 if isinstance(lv, str) and lv.strip():
-                    tgt = _strip_event_id(_strip_pos(lv))
+                    tgt = _strip_event_id(_drop_driver_suffix(_strip_pos(lv)))
                     if tgt:
                         links.append(tgt)
             thr = r.get("THRESHOLD")
@@ -257,6 +268,27 @@ def build(src: Path, llp_report: Path | None = None) -> Path:
 
     airframe_ev, engine_ev, apu_ev = parse_templates(xl)
 
+    # Propellers: ACTUATOR / NUT / TRANSFER TUBE are PROPELLER rotables (ATRs), not
+    # airframe events. Pull them out of the airframe events into a PROPELLER unit
+    # type (FH-driven, LH/RH), collapsing the LH/RH (1/2) and the -FH suffix.
+    _PROP_RE = re.compile(r"\b(ACTUATOR|NUT|TRANSFER\s*TUBE|HUB)\b", re.I)
+    _prop_ev: dict[str, dict] = {}
+    for fam in list(airframe_ev):
+        kept = []
+        for e in airframe_ev[fam]:
+            if _PROP_RE.search(e["event_name"]):
+                base = re.sub(r"\s*\d+\s*", " ", e["event_name"])     # drop LH/RH digit
+                base = _drop_driver_suffix(base).strip(" -")
+                eid = _strip_event_id(base)
+                if eid and eid not in _prop_ev:
+                    _prop_ev[eid] = {"event_id": eid, "event_name": base, "driver": "FH",
+                                     "hard_limit": e.get("hard_limit"), "links": [],
+                                     "link_to": None, "soft_thr": None}
+            else:
+                kept.append(e)
+        airframe_ev[fam] = kept
+    propeller_ev = {"PROP": list(_prop_ev.values())} if _prop_ev else {}
+
     wb = Workbook()
     lists = wb.active
     lists.title = "_Lists"
@@ -292,10 +324,13 @@ def build(src: Path, llp_report: Path | None = None) -> Path:
     for fam in sorted(engine_ev):
         # LLP link target must be an actual Event_ID of this engine type.
         ev_ids = {e["event_id"] for e in engine_ev[fam]}
-        link = "HSI_FH" if "HSI_FH" in ev_ids else ("FH" if "FH" in ev_ids else "")
+        link = "HSI" if "HSI" in ev_ids else ("FH" if "FH" in ev_ids else "")
         ut_rows.append(["ENGINE", fam, "FC", link, 1.0, "Engine type — LLPs driven by FC, bundled with the primary engine SV."])
     for fam in sorted(apu_ev):
         ut_rows.append(["APU", fam, "FC", "FH", 1.0, "APU type — LLPs driven by FC."])
+    for fam in sorted(propeller_ev):
+        ut_rows.append(["PROPELLER", fam, "NONE", "", "",
+                        "Propeller rotables (actuator / nut / transfer tube) — FH-driven, LH/RH."])
     ut = _sheet(wb, "Unit_Types",
                 ["Unit_Kind", "Unit_Type", "LLP_Driver", "LLP_Link_To_Event",
                  "LLP_Soft_Threshold_Years", "Notes"],
@@ -310,7 +345,8 @@ def build(src: Path, llp_report: Path | None = None) -> Path:
     ev_headers = ["Unit_Kind", "Unit_Type", "Event_ID", "Event_Name", "Driver", "Hard_Limit",
                   "Soft_Threshold_Years", "Redelivery_Min_Life_Years", "Workscope_Class"]
     ev_rows = []
-    for kind, evmap in (("AIRFRAME", airframe_ev), ("ENGINE", engine_ev), ("APU", apu_ev)):
+    for kind, evmap in (("AIRFRAME", airframe_ev), ("ENGINE", engine_ev),
+                        ("APU", apu_ev), ("PROPELLER", propeller_ev)):
         for fam in sorted(evmap):
             for e in evmap[fam]:
                 ev_rows.append([kind, fam, e["event_id"], e["event_name"], e["driver"],
@@ -421,6 +457,21 @@ def build(src: Path, llp_report: Path | None = None) -> Path:
     for esn in sorted(set(engine_type) - apu_serials):
         tail, pos = install.get(esn, (None, "SPARE"))
         unit_rows.append([esn, "ENGINE", engine_type.get(esn) or "", tail or "", pos if tail else "SPARE"])
+    # Propeller units: LH/RH per aircraft that carries propeller data (ATRs)
+    prop_tails = []
+    if propeller_ev:
+        for _, r in ac.iterrows():
+            fam = _clean(r.get("FAMILY"))
+            tail = _clean(r.get("REG"))
+            if not tail or fam in ENGINE_FAMILIES or fam in APU_FAMILIES:
+                continue
+            has_prop = any(pd.notna(r.get(f"{x} {i}-FH SLSV"))
+                           for x in ("ACTUATOR", "NUT", "TRANSFER TUBE") for i in ("1", "2"))
+            if not has_prop:
+                continue
+            prop_tails.append(str(tail))
+            for pos, lbl in (("LHPROP", "LH"), ("RHPROP", "RH")):
+                unit_rows.append([f"{tail}-PROP-{lbl}", "PROPELLER", "PROP", str(tail), pos])
     units = _sheet(wb, "Components",
                    ["Component_ID", "Unit_Kind", "Unit_Type", "Installed_On_Tail", "Position"],
                    unit_rows)
@@ -456,6 +507,15 @@ def build(src: Path, llp_report: Path | None = None) -> Path:
             float(r.get("MAX")) if pd.notna(r.get("MAX")) else None,
             int(r.get("AOG")) if pd.notna(r.get("AOG")) else 0,
         ] + monthly)
+    # Propeller utilisation = the airframe's (propellers fly with the aircraft).
+    if propeller_ev and prop_tails:
+        _af_util = {str(row[0]): row for row in util_rows if row[1] == "AIRFRAME"}
+        for tail in prop_tails:
+            base = _af_util.get(str(tail))
+            if base is None:
+                continue
+            for lbl in ("LH", "RH"):
+                util_rows.append([f"{tail}-PROP-{lbl}", "PROPELLER"] + list(base[2:]))
     uw = _sheet(wb, "Utilization", util_headers, util_rows)
     _add_dropdown(uw, 2, "UnitKind")
 
@@ -568,12 +628,17 @@ def _build_unit_status(wb, ac, airframe_ev, engine_ev, apu_ev, fleet_tails):
             esn = _clean(r.get(pos))
             if not esn:
                 continue
+            _tsn, _csn = _clean(r.get(f"{pos}-TSN")), _clean(r.get(f"{pos}-CSN"))
             fh = r.get(f"{pos}-FH SLSV")
             fc = r.get(f"{pos}-FC SLSV")
             if pd.notna(fh) or pd.notna(fc):
                 rows.append([esn, "FH", "FH", fh if pd.notna(fh) else None,
-                             fc if pd.notna(fc) else None, None,
-                             _clean(r.get(f"{pos}-TSN")), _clean(r.get(f"{pos}-CSN")), None])
+                             fc if pd.notna(fc) else None, None, _tsn, _csn, None])
+            # engine sub-events HSI / CSI / RGB (driver FH) — kept without the -FH suffix
+            for sub in ("HSI", "CSI", "RGB"):
+                sv = r.get(f"{pos} {sub}-FH SLSV")
+                if pd.notna(sv):
+                    rows.append([esn, sub, "FH", sv, None, None, _tsn, _csn, None])
         # APU — driver is APU FH
         apu = _clean(r.get("APU"))
         if apu:
@@ -582,6 +647,15 @@ def _build_unit_status(wb, ac, airframe_ev, engine_ev, apu_ev, fleet_tails):
                 rows.append([apu, "FH", "FH", fh if pd.notna(fh) else None,
                              fc if pd.notna(fc) else None, None,
                              _clean(r.get("APU-TSN")), _clean(r.get("APU-CSN")), None])
+        # Propellers — ACTUATOR / NUT / TRANSFER TUBE SLSV → LH(1)/RH(2) prop units (FH)
+        _rtsn, _rcsn = _clean(r.get("REG-TSN")), _clean(r.get("REG-CSN"))
+        for lbl, idx in (("LH", "1"), ("RH", "2")):
+            for ev_col, ev_id in (("ACTUATOR", "ACTUATOR"), ("NUT", "NUT"),
+                                  ("TRANSFER TUBE", "TRANSFER_TUBE")):
+                sv = r.get(f"{ev_col} {idx}-FH SLSV")
+                if pd.notna(sv):
+                    rows.append([f"{tail}-PROP-{lbl}", ev_id, "FH", sv, None, None,
+                                 _rtsn, _rcsn, None])
     _sheet(wb, "Unit_Status", headers, rows)
 
 

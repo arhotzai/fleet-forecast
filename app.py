@@ -7,6 +7,7 @@ Upload the master database workbook, optionally upload a fresh LLP report
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -233,11 +234,17 @@ NAV_CAL   = "SV Calendar"
 NAV_LOG   = "Event Log"
 NAV_LLP   = "LLP Status"
 NAV_AC    = "Aircraft Detail"
+NAV_POWER = "Powerplant"
+NAV_STATUS = "Current Fleet Status"
+NAV_EDIT  = "Edit Data"
 NAV_EXP   = "Export"
+NAV_GUIDE = "Guide & Templates"
 NAV_NOTES = "Data Notes"
-NAV_ITEMS = [NAV_ASK, NAV_UTIL, NAV_DASH, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC, NAV_EXP, NAV_NOTES]
-NAV_ICONS = ["chat-dots", "graph-up-arrow", "bar-chart-fill", "calendar3", "list-task",
-             "wrench-adjustable", "airplane", "box-arrow-down", "info-circle"]
+NAV_ITEMS = [NAV_ASK, NAV_STATUS, NAV_UTIL, NAV_DASH, NAV_CAL, NAV_LOG, NAV_LLP, NAV_AC,
+             NAV_POWER, NAV_EDIT, NAV_EXP, NAV_GUIDE, NAV_NOTES]
+NAV_ICONS = ["chat-dots", "clipboard-data", "graph-up-arrow", "bar-chart-fill", "calendar3",
+             "list-task", "wrench-adjustable", "airplane", "fan", "pencil-square",
+             "box-arrow-down", "mortarboard", "info-circle"]
 
 # professional sidebar navigation (streamlit-option-menu)
 NAV_STYLES = {
@@ -278,10 +285,11 @@ st.markdown("""<style>
 # ── Sidebar: uploads + navigation ─────────────────────────────
 with st.sidebar:
     st.header("Database")
-    db_file = st.file_uploader("Fleet Maintenance Status Database (.xlsx)", type=["xlsx"], key="db")
-    _DEFAULT_DB = Path(__file__).parent / "data" / "FLEET_MAINTENANCE_STATUS_DATABASE.xlsx"
-    if db_file is None and _DEFAULT_DB.exists():
-        st.caption("Using the bundled database — upload a file above to override.")
+    db_file = st.file_uploader("Database file (.xlsx) — any file name", type=["xlsx"], key="db",
+                               help="Upload your Fleet Maintenance Status database. The file name "
+                                    "doesn't matter — only its contents are read.")
+    if db_file is None:
+        st.caption("Upload your database file to begin — nothing is pre-loaded.")
 
     st.write("")
     if _HAS_OPTION_MENU:
@@ -295,9 +303,22 @@ with st.sidebar:
     st.divider()
     run_clicked = st.button("↻ Re-run projection", type="primary", use_container_width=True)
 
-# resolve the database source: uploaded file, else the bundled default
-db_bytes = db_file.getvalue() if db_file is not None else (
-    _DEFAULT_DB.read_bytes() if _DEFAULT_DB.exists() else None)
+# resolve the database source: in-app edits > uploaded file > bundled default.
+# A new/changed upload supersedes (and clears) any in-app edits.
+_uploaded_bytes = db_file.getvalue() if db_file is not None else None
+if _uploaded_bytes is not None:
+    _uh = hash(_uploaded_bytes)
+    if st.session_state.get("_uploaded_hash") != _uh:
+        st.session_state["_uploaded_hash"] = _uh
+        st.session_state.pop("edited_db_bytes", None)
+# No bundled/hardcoded data — the app is ALWAYS empty until a file is uploaded
+# (or edited in-app). Nothing is pre-loaded.
+if st.session_state.get("edited_db_bytes") is not None:
+    db_bytes = st.session_state["edited_db_bytes"]
+elif _uploaded_bytes is not None:
+    db_bytes = _uploaded_bytes
+else:
+    db_bytes = None
 
 if db_bytes is None:
     st.info("⬅ Upload your **Fleet Maintenance Status Database** (.xlsx) in the sidebar to begin.")
@@ -331,8 +352,33 @@ if proj is None or proj.events is None:
 events = proj.events
 fleet = ds.get("Fleet")
 
+
+def _active_today(_fl):
+    """Aircraft in service today: Delivery ≤ today ≤ Redelivery (or Extension)."""
+    if _fl is None or _fl.empty:
+        return _fl
+    d = _fl.copy()
+    for _c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
+        if _c in d.columns:
+            d[_c] = pd.to_datetime(d[_c], errors="coerce")
+    _today = pd.Timestamp.today().normalize()
+    _end = None
+    if "Redelivery_Date" in d.columns:
+        _end = d["Redelivery_Date"]
+    if "Extension_Date" in d.columns:
+        _end = d["Extension_Date"].fillna(_end) if _end is not None else d["Extension_Date"]
+    m = pd.Series(True, index=d.index)
+    if "Delivery_Date" in d.columns:
+        m &= d["Delivery_Date"].isna() | (d["Delivery_Date"] <= _today)
+    if _end is not None:
+        m &= _end.isna() | (_end >= _today)
+    return d[m]
+
+
+fleet_active = _active_today(fleet)
+
 # ── KPI tiles (Power BI style) ────────────────────────────────
-_n_ac = fleet["Tail"].nunique() if not fleet.empty else 0
+_n_ac = fleet_active["Tail"].nunique() if not fleet_active.empty else 0
 _n_units = proj.unit_status["Unit_ID"].nunique() if (proj.unit_status is not None and not proj.unit_status.empty) else 0
 next12 = events[pd.to_datetime(events["Date"]) <= proj.dates[0] + pd.offsets.MonthEnd(12)] if not events.empty else events
 _n_llp = int((events["Trigger"] == "LLP_REPLACEMENT").sum()) if not events.empty else 0
@@ -415,7 +461,7 @@ def _llp_table_html(df: pd.DataFrame, cap: int = 500) -> tuple[str, int]:
             f"<td>{_fmt(r.get('LLP_SN'))}</td><td>{_fmt(r.get('Description'))}</td>"
             f"<td class='num'>{_fmt(lim, True)}</td><td class='num'>{_fmt(slsv, True)}</td>"
             f"<td class='num'>{_fmt(togo, True)}</td><td style='min-width:230px'>{bar}</td>"
-            f"<td>{_fmt(r.get('Projected_SV'))}</td><td>{_fmt(r.get('Reason'))}</td></tr>"
+            f"<td>{_fmt(r.get('Projected_SV'))}</td><td>{_reason_badge(r.get('Reason'))}</td></tr>"
         )
     head = ("<tr><th>Unit_ID</th><th>LLP PN</th><th>LLP SN</th><th>Description</th>"
             "<th class='num'>Limit</th><th class='num'>SLSV</th><th class='num'>To-go</th>"
@@ -430,10 +476,46 @@ def _llp_table_html(df: pd.DataFrame, cap: int = 500) -> tuple[str, int]:
     return html, min(len(df), cap)
 
 
+def _reason_badge(val) -> str:
+    """Vibrant colour-coded pill for a projection 'Reason' value."""
+    s = _fmt(val)
+    if not s:
+        return ""
+    low = s.lower()
+    c = (C_HARD if "hard link" in low else
+         C_SOFT if "soft link" in low else
+         C_LLP if ("llp" in low or "replace" in low) else
+         C_LIMIT)
+    return (f'<span style="display:inline-block;padding:3px 13px;border-radius:999px;'
+            f'background:{c}22;color:{c};border:1px solid {c}66;font-size:.74rem;'
+            f'font-weight:700;white-space:nowrap;box-shadow:0 0 0 1px {c}22">{s}</span>')
+
+
+def _signed_pill(v) -> str:
+    """Green (life remaining) / red (overdue) pill for a signed numeric value."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return _fmt(v)
+    if pd.isna(f):
+        return ""
+    pos = f >= 0
+    c = "#2ecc71" if pos else "#ff6b6b"
+    txt = (f"{int(f):+,}" if f == int(f) else f"{f:+,.1f}")
+    return (f'<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 12px;'
+            f'border-radius:999px;background:{c}1e;color:{c};border:1px solid {c}55;'
+            f'font-weight:700;font-size:.78rem;white-space:nowrap">'
+            f'<span style="width:7px;height:7px;border-radius:50%;background:{c};'
+            f'box-shadow:0 0 6px {c}">&nbsp;</span>{txt}</span>')
+
+
 def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reason",
-                  height: int = 360, cap: int = 200) -> str:
+                  height: int = 360, cap: int = 200, signed_cols: list[str] | None = None,
+                  labels: dict[str, str] | None = None) -> str:
     """Render a dark, professional HTML table: sticky header, zebra rows, hover,
-    tabular numbers, and colour-coded 'Reason' pills."""
+    tabular numbers, colour-coded 'Reason' pills, and green/red signed pills."""
+    signed = set(signed_cols or [])
+    labels = labels or {}
     cols = [c for c in columns if c in df.columns]
     if not cols:
         return ""
@@ -441,7 +523,7 @@ def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reaso
     numeric = {c for c in cols if pd.api.types.is_numeric_dtype(d[c])}
 
     def _lab(c):
-        return str(c).replace("_", " ")
+        return labels.get(c, str(c).replace("_", " "))
 
     def _numfmt(v):
         try:
@@ -452,22 +534,11 @@ def _pretty_table(df: pd.DataFrame, columns: list[str], reason_col: str = "Reaso
             return ""
         return f"{int(f):,}" if f == int(f) else f"{f:,.1f}"
 
-    def _badge(val):
-        s = _fmt(val)
-        if not s:
-            return ""
-        low = s.lower()
-        c = (C_HARD if "hard link" in low else
-             C_SOFT if "soft link" in low else
-             C_LLP if ("llp" in low or "replace" in low) else
-             C_LIMIT)
-        return (f'<span style="display:inline-block;padding:2px 11px;border-radius:999px;'
-                f'background:{c}22;color:{c};border:1px solid {c}66;font-size:.72rem;'
-                f'font-weight:600;white-space:nowrap">{s}</span>')
-
     def _cell(c, v):
         if c == reason_col:
-            return f"<td>{_badge(v)}</td>"
+            return f"<td>{_reason_badge(v)}</td>"
+        if c in signed:
+            return f"<td class='num'>{_signed_pill(v)}</td>"
         if c in numeric:
             return f"<td class='num'>{_numfmt(v)}</td>"
         return f"<td>{_fmt(v)}</td>"
@@ -510,10 +581,10 @@ def _big_cat(name):
     return "Other"
 
 
-# aircraft by big category
+# aircraft by big category (active today)
 _ac_cat = {"NEO": 0, "CEO": 0, "ATR": 0}
-if not fleet.empty:
-    for _fam, _cnt in fleet["Aircraft_Family"].value_counts().items():
+if fleet_active is not None and not fleet_active.empty:
+    for _fam, _cnt in fleet_active["Aircraft_Family"].value_counts().items():
         _c = _big_cat(_fam)
         if _c in _ac_cat:
             _ac_cat[_c] += int(_cnt)
@@ -534,10 +605,38 @@ if _comp_g is not None and not _comp_g.empty and "Installed_On_Tail" in _comp_g.
         if _c in _sp_cat:
             _sp_cat[_c] += int(_cnt)
 
-# Row 1 — aircraft: Total fleet + NEO / CEO / ATR
+# Data reference / snapshot date — the starting point of the whole projection
+_cfg_asof = ds.get("Config")
+_asof_str = ""
+if _cfg_asof is not None and not _cfg_asof.empty and "Setting" in _cfg_asof.columns:
+    _m = _cfg_asof[_cfg_asof["Setting"].astype(str) == "As_Of_Date"]
+    if not _m.empty:
+        _ad = pd.to_datetime(_m["Value"].iloc[0], errors="coerce")
+        _asof_str = _ad.strftime("%d %b %Y") if pd.notna(_ad) else str(_m["Value"].iloc[0])
+if _asof_str:
+    st.markdown(
+        f'<div style="display:inline-block;background:#111a28;border:1px solid #2b3550;'
+        f'border-left:3px solid {ACCENT};border-radius:10px;padding:.45rem .9rem;margin:.1rem 0 .7rem;'
+        f'font-size:.85rem;color:{TEXT};">📅 <b>Data reference (snapshot): {_asof_str}</b>'
+        f'<span style="color:{MUTED};">  — the projection\'s starting point. '
+        f'All current status (TSN/CSN/SLSV) is as of this date.</span></div>',
+        unsafe_allow_html=True)
+
+# "live" pulsing green dot for the active-fleet card
+st.markdown("""<style>
+  .live-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ecc71;
+    margin-right:6px;vertical-align:middle;box-shadow:0 0 0 0 rgba(46,204,113,.7);
+    animation:livepulse 1.6s infinite;}
+  @keyframes livepulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.6)}
+    70%{box-shadow:0 0 0 8px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
+</style>""", unsafe_allow_html=True)
+
+# Row 1 — aircraft: LIVE total fleet (active today) + NEO / CEO / ATR
+_LIVE_GREEN = "#2ecc71"
 st.markdown(
     '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.8rem;margin:.2rem 0 .6rem;">'
-    + _tile(f"{_n_ac}", "Total fleet", "aircraft", ACCENT)
+    + _tile(f"{_n_ac}", '<span class="live-dot"></span>Live total fleet', "active today",
+            _LIVE_GREEN)
     + _tile(f"{_ac_cat['NEO']}", "NEO", "aircraft", _NEO_C)
     + _tile(f"{_ac_cat['CEO']}", "CEO", "aircraft", _CEO_C)
     + _tile(f"{_ac_cat['ATR']}", "ATR", "aircraft", _ATR_C)
@@ -620,7 +719,8 @@ if nav == NAV_DASH:
     else:
         ev = events.copy()
         ev["Date"] = pd.to_datetime(ev["Date"])
-        kind_label = {"AIRFRAME": "Airframe", "ENGINE": "Engine", "APU": "APU"}
+        kind_label = {"AIRFRAME": "Airframe", "ENGINE": "Engine", "APU": "APU",
+                      "PROPELLER": "Propeller"}
         import re as _re
         _LG = _re.compile(r"\b(MLG|NOSE\s*LG|LG|LANDING)\b", _re.I)
 
@@ -638,7 +738,8 @@ if nav == NAV_DASH:
         ev["Aircraft_Type"] = ev["Tail"].map(_fammap)
 
         f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.8, .9])
-        scope_sel = f1.multiselect("Category", ["Airframe", "Landing gear", "Engine", "APU", "LLP"],
+        scope_sel = f1.multiselect("Category",
+                                   ["Airframe", "Landing gear", "Engine", "APU", "Propeller", "LLP"],
                                    default=["Airframe"], key="sv_scope_ms",
                                    placeholder="All categories")
         _families = sorted(ev["Aircraft_Type"].dropna().unique().tolist())
@@ -1172,6 +1273,285 @@ if nav == NAV_UTIL:
         st.download_button("⬇ Download utilisation assumptions (CSV)",
                            util.to_csv(index=False).encode(), "utilisation.csv", "text/csv")
 
+# ── Current Fleet Status (versatile live monitor) ─────────────
+if nav == NAV_STATUS:
+    st.subheader("Current fleet status — live monitor")
+    _us = ds.get("Unit_Status")
+    _comp = ds.get("Components")
+    _evdef = ds.get("Events")
+    if _us is None or _us.empty:
+        st.info("No status data in the database.")
+    else:
+        _info = {}
+        if _comp is not None and not _comp.empty:
+            for _, r in _comp.iterrows():
+                _info[str(r["Component_ID"])] = (str(r["Unit_Kind"]), str(r["Unit_Type"]),
+                                                 str(r.get("Position") or ""),
+                                                 str(r.get("Installed_On_Tail") or ""))
+        if not fleet.empty:
+            for _, r in fleet.iterrows():
+                _info[str(r["Tail"])] = ("AIRFRAME", str(r.get("Aircraft_Family") or ""),
+                                         "AIRFRAME", str(r["Tail"]))
+        _lim = {}
+        if _evdef is not None and not _evdef.empty:
+            for _, r in _evdef.iterrows():
+                _lim[(str(r["Unit_Type"]), str(r["Event_ID"]))] = (r.get("Hard_Limit"),
+                                                                   str(r.get("Driver") or ""))
+        _POSL = {"LHENG": "LH", "RHENG": "RH", "APU": "APU", "LHPROP": "LH", "RHPROP": "RH",
+                 "AIRFRAME": "—", "SPARE": "Spare"}
+        _rows = []
+        for _, r in _us.iterrows():
+            uid = str(r["Unit_ID"])
+            inf = _info.get(uid)
+            if not inf:
+                continue
+            kind, utype, pos, tail = inf
+            evid = str(r["Event_ID"])
+            hl, drv = _lim.get((utype, evid), (None, str(r.get("Driver") or "")))
+            drv = drv or str(r.get("Driver") or "")
+            # current + at-last-SV readings
+            tsn = pd.to_numeric(r.get("TSN"), errors="coerce")
+            csn = pd.to_numeric(r.get("CSN"), errors="coerce")
+            tsn_l = pd.to_numeric(r.get("TSN_At_LSV"), errors="coerce")
+            csn_l = pd.to_numeric(r.get("CSN_At_LSV"), errors="coerce")
+            slsv_fh = pd.to_numeric(r.get("SLSV_FH"), errors="coerce")
+            slsv_fc = pd.to_numeric(r.get("SLSV_FC"), errors="coerce")
+            # cycles since last SV = CSN now − CSN @ last SV; but the @-LSV reading is
+            # engine-level — when it's missing/zero, trust the per-event AMOS value.
+            cyc_sv = (csn - csn_l) if (pd.notna(csn) and pd.notna(csn_l) and csn_l) else slsv_fc
+            # "since last event" in the event's own driver units
+            if drv.startswith("CAL") or drv == "CLND":
+                consumed = pd.to_numeric(r.get("SLSV_Months"), errors="coerce")
+            elif drv == "FC":
+                consumed = cyc_sv
+            else:   # FH — hours since last event = TSN now − TSN @ last SV (when valid)
+                consumed = (tsn - tsn_l) if (pd.notna(tsn) and pd.notna(tsn_l) and tsn_l) else slsv_fh
+            hln = pd.to_numeric(hl, errors="coerce")
+            remaining = (hln - consumed) if (pd.notna(hln) and pd.notna(consumed)) else None
+            pct = round(consumed / hln * 100, 1) if (pd.notna(hln) and hln and pd.notna(consumed)) else None
+
+            def _r0(x):
+                return round(x, 0) if pd.notna(x) else None
+
+            def _r1(x):
+                return round(x, 1) if pd.notna(x) else None
+
+            _rows.append({"Unit": uid, "Kind": kind, "Type": utype, "Pos": _POSL.get(pos, pos),
+                          "Tail": tail, "Event": evid, "Driver": drv,
+                          "Consumed": _r1(consumed), "CycSV": _r0(cyc_sv),
+                          "Limit": hln if pd.notna(hln) else None,
+                          "Remaining": _r1(remaining), "% used": pct,
+                          "TSN_LSV": _r0(tsn_l), "CSN_LSV": _r0(csn_l),
+                          "TSN_now": _r0(tsn), "CSN_now": _r0(csn),
+                          "Last_SV": r.get("Last_SV_Date")})
+        sdf = pd.DataFrame(_rows)
+        if sdf.empty:
+            st.info("No matching status rows.")
+        else:
+            def _prune(key, opts):
+                """Drop stale selections so options can cascade without Streamlit errors."""
+                if key in st.session_state:
+                    st.session_state[key] = [x for x in st.session_state[key] if x in opts]
+
+            c1, c2, c3, c4 = st.columns(4)
+            # Cascading filters — each dropdown only offers values relevant to the
+            # selections above it (e.g. pick AIRFRAME → Tail list shows aircraft tails).
+            o_kind = sorted(sdf["Kind"].dropna().unique())
+            _prune("st_kind", o_kind)
+            _k = c1.multiselect("Unit kind", o_kind, key="st_kind", placeholder="All kinds")
+            f1 = sdf[sdf["Kind"].isin(_k)] if _k else sdf
+
+            o_type = sorted(f1["Type"].dropna().unique())
+            _prune("st_type", o_type)
+            _t = c2.multiselect("Type", o_type, key="st_type", placeholder="All types")
+            f2 = f1[f1["Type"].isin(_t)] if _t else f1
+
+            o_ev = sorted(f2["Event"].dropna().unique())
+            _prune("st_ev", o_ev)
+            _e = c3.multiselect("Event", o_ev, key="st_ev", placeholder="All events")
+            f3 = f2[f2["Event"].isin(_e)] if _e else f2
+
+            o_tu = sorted(set(f3["Tail"].dropna()) | set(f3["Unit"].dropna()))
+            _prune("st_tail", o_tu)
+            _tl = c4.multiselect("Tail / unit", o_tu, key="st_tail", placeholder="All")
+            v = f3[f3["Tail"].isin(_tl) | f3["Unit"].isin(_tl)] if _tl else f3
+            st.caption(f"{len(v):,} unit × event rows (as of the snapshot).")
+            v = v.sort_values("% used", ascending=False, na_position="last")
+            st.markdown(_pretty_table(
+                v, ["Tail", "Unit", "Kind", "Type", "Pos", "Event", "Driver",
+                    "Consumed", "CycSV", "Limit", "Remaining", "% used",
+                    "TSN_LSV", "CSN_LSV", "TSN_now", "CSN_now", "Last_SV"],
+                height=520, cap=800, signed_cols=["Remaining"],
+                labels={"Unit": "Unit / serial", "Consumed": "Since last event",
+                        "CycSV": "Cycles since SV", "% used": "% of limit",
+                        "TSN_LSV": "TSN @ last SV", "CSN_LSV": "CSN @ last SV",
+                        "TSN_now": "TSN now", "CSN_now": "CSN now", "Last_SV": "Last SV"}),
+                unsafe_allow_html=True)
+            st.write("")
+            st.download_button("⬇ Download current status (CSV)", v.to_csv(index=False).encode(),
+                               "current_fleet_status.csv", "text/csv")
+
+# ── Powerplant Components (engines & APUs, incl. spares) ──────
+if nav == NAV_POWER:
+    st.subheader("Powerplant components — engines & APUs")
+    comp = ds.get("Components")
+    us = ds.get("Unit_Status")
+    llp = ds.get("LLP_Registry")
+    if comp.empty:
+        st.info("No components in the database.")
+    else:
+        pw = comp[comp["Unit_Kind"].isin(["ENGINE", "APU"])].copy()
+        _POS = {"LHENG": "LH", "RHENG": "RH", "APU": "APU", "SPARE": "Spare"}
+        pw["Pos"] = pw["Position"].map(_POS).fillna(pw["Position"].astype(str))
+        pw["State"] = pw["Position"].apply(lambda p: "Spare" if str(p) == "SPARE" else "Installed")
+
+        # current status per unit (last event) — straight from the DB, no hardcoded event names
+        if us is not None and not us.empty:
+            _aggcols = {"TSN": ("TSN", "first"), "CSN": ("CSN", "first"),
+                        "Last_SV": ("Last_SV_Date", "first")}
+            if "TSN_At_LSV" in us.columns:
+                _aggcols["TSN_at_SV"] = ("TSN_At_LSV", "first")
+            if "WS_Type" in us.columns:
+                _aggcols["WS"] = ("WS_Type", "first")
+            _agg = (us.groupby(us["Unit_ID"].astype(str)).agg(**_aggcols)
+                    .reset_index().rename(columns={"Unit_ID": "_cid"}))
+            pw = pw.merge(_agg, left_on=pw["Component_ID"].astype(str), right_on="_cid", how="left")
+        for _c in ("TSN", "CSN", "Last_SV", "TSN_at_SV", "WS"):
+            if _c not in pw.columns:
+                pw[_c] = None
+        # LLP count per unit
+        if llp is not None and not llp.empty:
+            _lc = llp.groupby(llp["Unit_ID"].astype(str)).size().rename("LLPs")
+            pw["LLPs"] = pw["Component_ID"].astype(str).map(_lc).fillna(0).astype(int)
+        else:
+            pw["LLPs"] = 0
+
+        _eng = pw[pw["Unit_Kind"] == "ENGINE"]
+        _apu = pw[pw["Unit_Kind"] == "APU"]
+        st.markdown(
+            '<div class="kpi-row">'
+            + _tile(f"{(_eng['State'] == 'Installed').sum()}", "Installed engines", "on-wing", ACCENT)
+            + _tile(f"{(_eng['State'] == 'Spare').sum()}", "Spare engines", "separate units", C_SOFT)
+            + _tile(f"{(_apu['State'] == 'Installed').sum()}", "Installed APUs", "on-wing", ACCENT2)
+            + _tile(f"{(_apu['State'] == 'Spare').sum()}", "Spare APUs", "separate units", C_HARD)
+            + '</div>', unsafe_allow_html=True)
+
+        f1, f2, f3 = st.columns([1, 1, 1])
+        _kinds = f1.multiselect("Kind", ["ENGINE", "APU"], default=["ENGINE", "APU"], key="pw_kind")
+        _types = sorted(pw["Unit_Type"].dropna().astype(str).unique())
+        _typ = f2.multiselect("Type", _types, key="pw_type", placeholder="All types")
+        _state = f3.multiselect("State", ["Installed", "Spare"], key="pw_state",
+                                placeholder="Installed + Spare")
+        view = pw.copy()
+        if _kinds:
+            view = view[view["Unit_Kind"].isin(_kinds)]
+        if _typ:
+            view = view[view["Unit_Type"].astype(str).isin(_typ)]
+        if _state:
+            view = view[view["State"].isin(_state)]
+
+        view = view.rename(columns={"Component_ID": "Serial", "Unit_Type": "Type",
+                                    "Installed_On_Tail": "On_Tail", "TSN_at_SV": "TSN_at_LSV",
+                                    "Last_SV": "Last_SV_date", "WS": "Last_WS"})
+        st.caption(f"{len(view)} powerplant units.  **TSN/CSN** = current (as of the snapshot date); "
+                   "**TSN@LSV** = TSN at the last shop visit; **Last SV / WS** from Fleet Maintenance Status.")
+        st.markdown(_pretty_table(view, ["Serial", "Type", "Pos", "State", "On_Tail",
+                                         "TSN", "TSN_at_LSV", "CSN", "Last_SV_date", "Last_WS",
+                                         "LLPs"],
+                                  height=420, cap=400), unsafe_allow_html=True)
+        st.write("")
+
+        # ── drill-down: one unit's sub-events + LLPs ──
+        st.markdown("#### Unit detail — shop visits & LLPs")
+        _units = sorted(view["Serial"].astype(str).unique())
+        if _units:
+            sel = st.selectbox("Select a unit (engine ESN / APU s/n)", _units, key="pw_unit")
+            # event display names come straight from the database (Events sheet) — not the code
+            _evdf = ds.get("Events")
+            _EVN = (dict(zip(_evdf["Event_ID"].astype(str), _evdf["Event_Name"].astype(str)))
+                    if _evdf is not None and not _evdf.empty else {})
+            # events/counters for this unit
+            su = us[us["Unit_ID"].astype(str) == sel].copy() if (us is not None and not us.empty) else pd.DataFrame()
+            cda, cdb = st.columns(2)
+            with cda:
+                st.markdown("**Shop-visit counters (since last SV)**")
+                if not su.empty:
+                    su["Event"] = su["Event_ID"].astype(str).map(_EVN).fillna(su["Event_ID"].astype(str))
+                    su = su.rename(columns={"SLSV_FH": "FH since SV", "SLSV_FC": "FC since SV",
+                                            "Last_SV_Date": "Last SV"})
+                    st.markdown(_pretty_table(su, ["Event", "Driver", "FH since SV", "FC since SV",
+                                                   "TSN", "CSN", "Last SV"], height=240),
+                                unsafe_allow_html=True)
+                else:
+                    st.caption("No counter rows for this unit.")
+            with cdb:
+                st.markdown("**Life-limited parts (LLPs)**")
+                sl = llp[llp["Unit_ID"].astype(str) == sel].copy() if (llp is not None and not llp.empty) else pd.DataFrame()
+                if not sl.empty:
+                    sl = sl.sort_values("ToGo")
+                    st.markdown(_pretty_table(sl, ["LLP_PN", "Description", "Limit_Cycles",
+                                                   "SLSV", "ToGo"], height=240, cap=100),
+                                unsafe_allow_html=True)
+                    st.caption(f"{len(sl)} LLPs on this unit (nearest to limit first).")
+                else:
+                    st.caption("No LLPs recorded for this unit.")
+
+# ── Edit Data (edit any sheet → download updated database) ────
+if nav == NAV_EDIT:
+    import io as _io
+    st.subheader("Edit the database & download the updated file")
+    st.caption("Change any value directly here, then **download the updated database**. "
+               "Click **Apply & re-run** to project with your edits straight away — or re-upload "
+               "the downloaded file later.")
+
+    # load every sheet fresh from the uploaded bytes (once per uploaded file)
+    if st.session_state.get("_edit_src") != _dbhash:
+        try:
+            _xls = pd.ExcelFile(_io.BytesIO(db_bytes))
+            st.session_state["edit_sheets"] = {s: pd.read_excel(_xls, s)
+                                               for s in _xls.sheet_names if not str(s).startswith("_")}
+            st.session_state["_edit_src"] = _dbhash
+        except Exception as exc:
+            st.error(f"Could not open the workbook for editing: {exc}")
+            st.stop()
+
+    _sheets = st.session_state.get("edit_sheets", {})
+    if not _sheets:
+        st.info("No editable sheets found.")
+    else:
+        _names = list(_sheets.keys())
+        c1, c2 = st.columns([1.3, 2])
+        _pick = c1.selectbox("Sheet to edit", _names,
+                             index=_names.index("Fleet") if "Fleet" in _names else 0,
+                             key="edit_pick")
+        c2.caption(f"**{_pick}** — {len(_sheets[_pick]):,} rows × {_sheets[_pick].shape[1]} columns. "
+                   "Edit cells, add rows (＋ at the bottom), or delete rows (select + ⌫).")
+        _edited = st.data_editor(_sheets[_pick], num_rows="dynamic", use_container_width=True,
+                                 height=460, key=f"ed_{_pick}")
+        _sheets[_pick] = _edited          # keep this sheet's edits in session
+
+        # build the updated workbook from all (possibly edited) sheets
+        def _build_xlsx(sheets_dict):
+            buf = _io.BytesIO()
+            with pd.ExcelWriter(buf, engine="xlsxwriter") as _w:
+                for _s, _df in sheets_dict.items():
+                    _df.to_excel(_w, sheet_name=str(_s)[:31], index=False)
+            return buf.getvalue()
+
+        st.divider()
+        b1, b2, b3 = st.columns([1.3, 1.1, 2])
+        _xlsx_bytes = _build_xlsx(_sheets)
+        b1.download_button("⬇ Download updated database (.xlsx)", _xlsx_bytes,
+                           "FLEET_MAINTENANCE_STATUS_DATABASE.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           use_container_width=True)
+        if b2.button("✅ Apply & re-run", type="primary", use_container_width=True):
+            st.session_state["edited_db_bytes"] = _xlsx_bytes
+            _run.clear()
+            st.session_state.pop("_dbhash", None)
+            st.rerun()
+        b3.caption("Download keeps a copy for later · Apply & re-run projects with your edits now.")
+
 # ── Export ────────────────────────────────────────────────────
 if nav == NAV_EXP:
     st.subheader("Download the full projection")
@@ -1192,6 +1572,165 @@ if nav == NAV_EXP:
     if proj.sv_plan_v2 is not None:
         st.download_button("⬇ SV matrix (CSV)", proj.sv_plan_v2.to_csv(index=False).encode(),
                            "sv_plan_v2.csv", "text/csv")
+
+# ── Guide & Templates (onboarding: sample file + 2-page overview) ──
+def _overview_html() -> str:
+    """Self-contained, print-to-PDF-ready 2-page overview of the app + data model."""
+    A = "#1a73c7"
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>Fleet Forecast — Overview</title><style>
+@page {{ size: A4; margin: 16mm; }}
+* {{ box-sizing: border-box; }}
+body {{ font-family: -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:#1b2330;
+       margin:0; font-size:12px; line-height:1.5; }}
+.page {{ page-break-after: always; padding:0 4px; }}
+.page:last-child {{ page-break-after: auto; }}
+h1 {{ font-size:26px; margin:0 0 2px; letter-spacing:-.5px; }}
+h1 .b {{ color:{A}; }}
+.kick {{ color:#6b7687; font-size:12px; text-transform:uppercase; letter-spacing:2px; margin-bottom:14px; }}
+h2 {{ font-size:14px; color:{A}; margin:18px 0 6px; border-bottom:2px solid {A}22; padding-bottom:3px; }}
+.lead {{ font-size:13.5px; color:#39424f; margin:10px 0 4px; }}
+.grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px 22px; margin-top:6px; }}
+.card {{ border:1px solid #e2e7ee; border-left:3px solid {A}; border-radius:6px; padding:8px 11px; }}
+.card b {{ color:#141b26; }}
+table {{ width:100%; border-collapse:collapse; margin-top:4px; font-size:11px; }}
+th {{ text-align:left; background:{A}; color:#fff; padding:5px 8px; font-weight:600; }}
+td {{ padding:5px 8px; border-bottom:1px solid #e8ecf2; vertical-align:top; }}
+tr:nth-child(even) td {{ background:#f6f8fb; }}
+.mono {{ font-family:ui-monospace,Menlo,Consolas,monospace; background:#eef2f7; padding:1px 5px; border-radius:4px; }}
+.foot {{ margin-top:16px; color:#8a93a3; font-size:10px; border-top:1px solid #e2e7ee; padding-top:6px; }}
+.pill {{ display:inline-block; background:{A}15; color:{A}; border-radius:999px; padding:1px 9px; font-size:10px; font-weight:600; }}
+</style></head><body>
+
+<div class="page">
+  <div class="kick">AEGEAN · Technical Fleet Planning</div>
+  <h1>Fleet <span class="b">Forecast</span> — Overview</h1>
+  <p class="lead">A single, file-driven engine that projects every airframe, engine, APU and
+  propeller shop visit across the lease horizon. One Excel workbook is the master source:
+  change a limit, a reading or a date there and the whole forecast updates — nothing is
+  hard-coded in the application.</p>
+
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><b>Projects shop visits</b><br>Every maintenance event (checks, engine SVs,
+      APU, propeller, LLPs) is projected month-by-month to its due date using each event's own
+      driver and limit.</div>
+    <div class="card"><b>Drivers &amp; links</b><br>Each event runs on Flight Hours, Flight Cycles
+      or calendar months, with soft/hard links so events bundled into one visit are recognised.</div>
+    <div class="card"><b>Live fleet status</b><br>A snapshot monitor shows, per unit, time since the
+      last event, limit, remaining life (green) or overdue (red), and current TSN/CSN.</div>
+    <div class="card"><b>Powerplant &amp; LLPs</b><br>Engines and APUs — installed and spare —
+      with TSN/CSN at last SV, workscope class and life-limited-part registries.</div>
+  </div>
+
+  <h2>How it works</h2>
+  <table>
+    <tr><th>Step</th><th>Detail</th></tr>
+    <tr><td><b>1 · Upload</b></td><td>Upload the master database workbook. The app starts empty —
+      your data never ships with it.</td></tr>
+    <tr><td><b>2 · Snapshot</b></td><td>The <span class="mono">As_Of_Date</span> in Config is the
+      reference point; all current readings (TSN / CSN / time-since-last-SV) are as of that date.</td></tr>
+    <tr><td><b>3 · Project</b></td><td>The engine walks each aircraft and its installed units to the
+      end of its lease (redelivery or extension), emitting every due event.</td></tr>
+    <tr><td><b>4 · Explore &amp; export</b></td><td>Dashboard, calendar, powerplant and status views;
+      export the full month-by-month projection workbook.</td></tr>
+  </table>
+
+  <h2>Sections at a glance</h2>
+  <p><span class="pill">Current Fleet Status</span> <span class="pill">SV Dashboard</span>
+  <span class="pill">Fleet &amp; Utilisation</span> <span class="pill">SV Calendar</span>
+  <span class="pill">Event Log</span> <span class="pill">LLP Status</span>
+  <span class="pill">Aircraft Detail</span> <span class="pill">Powerplant</span>
+  <span class="pill">Edit Data</span> <span class="pill">Export</span></p>
+  <div class="foot">Fleet Forecast · file-driven maintenance projection · page 1 of 2</div>
+</div>
+
+<div class="page">
+  <div class="kick">Database Guide</div>
+  <h1>Filling the <span class="b">master file</span></h1>
+  <p class="lead">The workbook is relational — identifiers (tails and serials) must match across
+  sheets. Keep the generic definition sheets (Events, Unit_Types, Event_Links) and fill the
+  fleet-specific sheets with your data.</p>
+
+  <table>
+    <tr><th>Sheet</th><th>What to put in it</th></tr>
+    <tr><td><b>Config</b></td><td>Snapshot / reference date (<span class="mono">As_Of_Date</span>).</td></tr>
+    <tr><td><b>Unit_Types</b></td><td>Every type: airframe families, engine types, APU, propeller,
+      plus each type's LLP driver &amp; linked event.</td></tr>
+    <tr><td><b>Events</b></td><td>Each maintenance event with its <b>Driver</b> (FH / FC /
+      CALENDAR_MONTHS), <b>Hard_Limit</b>, soft threshold and workscope class.</td></tr>
+    <tr><td><b>Event_Links</b></td><td>Soft / hard links — events performed together in one visit.</td></tr>
+    <tr><td><b>Fleet</b></td><td>Aircraft: tail, family, delivery / redelivery / extension dates,
+      installed engine &amp; APU serials.</td></tr>
+    <tr><td><b>Components</b></td><td>Engines, APUs, propellers — serial, type, position,
+      installed-on tail (blank = spare).</td></tr>
+    <tr><td><b>Unit_Status</b></td><td>Live readings per unit × event: TSN, CSN, TSN/CSN @ last SV,
+      time since last SV, last-SV date.</td></tr>
+    <tr><td><b>Utilization</b></td><td>Annual FH / FC and monthly distribution per unit.</td></tr>
+    <tr><td><b>LLP_Registry</b></td><td>Life-limited parts per engine: PN, SN, limit, cycles used.</td></tr>
+    <tr><td><b>Financial_* / MR_Rates / …</b></td><td>Financial module inputs (rates, SV cost matrix,
+      end-of-lease terms).</td></tr>
+  </table>
+
+  <h2>Golden rules</h2>
+  <div class="grid">
+    <div class="card"><b>IDs must match</b><br>A tail or serial written in Fleet must appear
+      identically in Components, Unit_Status and Utilization.</div>
+    <div class="card"><b>Leave unknowns blank</b><br>Missing last-SV dates stay empty — the engine
+      falls back to time-since-last-SV; never invent a date.</div>
+    <div class="card"><b>The file decides</b><br>Limits, drivers, names and links live in the file,
+      not the code. Re-upload and everything recalculates.</div>
+    <div class="card"><b>Spares are units too</b><br>An engine or APU with a blank tail is a spare —
+      tracked as its own inventory item.</div>
+  </div>
+
+  <h2>Get started</h2>
+  <p class="lead">Download the sample workbook from the app, open it to see a worked 3-aircraft
+  example, replace the demo rows with your fleet, and upload it back. That's it.</p>
+  <div class="foot">Fleet Forecast · database guide · page 2 of 2</div>
+</div>
+</body></html>"""
+
+
+if nav == NAV_GUIDE:
+    st.subheader("Guide & templates")
+    st.caption("Everything someone new needs to start: a worked sample workbook and a printable "
+               "2-page overview of the app and the data model.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 📘 2-page overview")
+        st.write("A concise, presentation-grade explanation of what the app does and how to fill "
+                 "the database. Open it and **Print → Save as PDF** for a shareable deck.")
+        st.download_button("⬇ Download overview (HTML, print-to-PDF)",
+                           _overview_html().encode("utf-8"),
+                           "Fleet_Forecast_Overview.html", "text/html",
+                           use_container_width=True)
+    with c2:
+        st.markdown("#### 📗 Sample database")
+        st.write("A ready-to-upload workbook with **3 demo aircraft** (random data) and the full "
+                 "sheet structure. Download it, replace the demo rows with your fleet, and upload.")
+        _sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "assets", "SAMPLE_fleet_database.xlsx")
+        if os.path.exists(_sample_path):
+            with open(_sample_path, "rb") as _sf:
+                st.download_button("⬇ Download sample database (.xlsx)", _sf.read(),
+                                   "SAMPLE_fleet_database.xlsx",
+                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   use_container_width=True)
+        else:
+            st.info("Sample file not bundled in this build.")
+
+    st.divider()
+    st.markdown("#### How the pieces fit together")
+    st.markdown(
+        "- **The master file is the single source of truth** — limits, drivers, event names and "
+        "links all live there, never in the code.\n"
+        "- **The app is empty until you upload** — your fleet data never ships with it.\n"
+        "- **Identifiers must match across sheets** — a tail/serial in *Fleet* must appear "
+        "identically in *Components*, *Unit_Status* and *Utilization*.\n"
+        "- **Re-upload to recalculate** — change anything in the file and the whole projection updates."
+    )
 
 # ── Data notes ────────────────────────────────────────────────
 if nav == NAV_NOTES:
