@@ -37,6 +37,15 @@ STATE: dict = {"ds": None, "proj": None, "airline": ""}
 _SAMPLE = os.path.join(_ROOT, "assets", "SAMPLE_fleet_database.xlsx")
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+# load backend secrets (ANTHROPIC_API_KEY, …) from .env.local if present — gitignored
+_ENV = os.path.join(_ROOT, ".env.local")
+if os.path.exists(_ENV):
+    for _line in open(_ENV):
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
 
 # ───────────────────────── json helpers ─────────────────────────
 def _num(v, default=0):
@@ -191,6 +200,7 @@ def _aircraft_list(ds) -> list[dict]:
             "family": _big_cat(r.get("Aircraft_Family")),
             "type": _str(r.get("Aircraft_Family")),
             "owner": _str(r.get("Operator")), "lessor": _str(r.get("Owner")),
+            "leasedOwned": _str(r.get("Leased_Owned")),
             "deliveryDate": _date(r.get("Delivery_Date")),
             "fhYear": fh, "fcYear": fc,
         })
@@ -547,6 +557,63 @@ async def put_sheets(sheets: list[dict]):
         raise HTTPException(422, f"Could not apply edits: {e}")
     STATE["ds"], STATE["proj"] = ds, proj
     return {"ok": True}
+
+
+_AI_SYSTEM = (
+    "You are a senior fleet maintenance planning analyst for an airline. Answer using ONLY the "
+    "data provided below (a snapshot of the current fleet and its projected shop visits). Be "
+    "concise and specific: cite numbers and tail/serial IDs, highlight risks such as overdue shop "
+    "visits or clustering of events, and give planning-useful observations. If the answer is not "
+    "in the data, say so plainly — never invent values."
+)
+
+
+def _ai_context(ds) -> str:
+    import json
+    rows = _status_rows(ds)
+    evs = _events(ds)
+    overdue = sorted([r for r in rows if r["remaining"] is not None and r["remaining"] < 0],
+                     key=lambda r: r["remaining"])
+    upcoming = sorted(evs, key=lambda e: e["dueDate"])[:25]
+    lines = [f"SNAPSHOT DATE: {_snapshot_date(ds)}",
+             f"FLEET SUMMARY: {json.dumps(summary())}",
+             f"COUNTS: {len(rows)} unit×event rows, {len(overdue)} overdue, {len(evs)} projected events.",
+             "TOP OVERDUE ITEMS (tail · unit · type · event · remaining · %used):"]
+    lines += [f"  {r['tail']} · {r['unit']} · {r['type']} · {r['event']} · {r['remaining']} · {r['pctLimit']}%"
+              for r in overdue[:20]]
+    lines.append("NEXT UPCOMING SHOP VISITS (date · tail · unit · event · reason):")
+    lines += [f"  {e['dueDate']} · {e['tail']} · {e['unit']} · {e['event']} · {e['reason']}" for e in upcoming]
+    return "\n".join(lines)
+
+
+@app.post("/ai/ask")
+async def ai_ask(body: dict):
+    question = str((body or {}).get("question", "")).strip()
+    if not question:
+        raise HTTPException(400, "Please include a question.")
+    ds = _ds()
+    if ds is None:
+        raise HTTPException(400, "Upload a workbook first.")
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(400, "No ANTHROPIC_API_KEY configured on the server.")
+    try:
+        import anthropic
+        import httpx2
+        # Anaconda's bundled decompressor is broken for this SDK's httpx2 stack;
+        # request identity (uncompressed) responses to bypass it.
+        client = anthropic.Anthropic(
+            api_key=key,
+            http_client=httpx2.Client(headers={"accept-encoding": "identity"}, timeout=60))
+        msg = client.messages.create(
+            model="claude-opus-4-8", max_tokens=2000,
+            thinking={"type": "adaptive"}, system=_AI_SYSTEM,
+            messages=[{"role": "user", "content": f"{_ai_context(ds)}\n\nQUESTION: {question}"}],
+        )
+        answer = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        return {"answer": answer.strip()}
+    except Exception as e:
+        raise HTTPException(502, f"AI request failed: {e}")
 
 
 @app.get("/export/{name}")
