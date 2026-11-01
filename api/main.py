@@ -561,12 +561,88 @@ async def put_sheets(sheets: list[dict]):
 
 
 _AI_SYSTEM = (
-    "You are a senior fleet maintenance planning analyst for an airline. Answer using ONLY the "
-    "data provided below (a snapshot of the current fleet and its projected shop visits). Be "
-    "concise and specific: cite numbers and tail/serial IDs, highlight risks such as overdue shop "
-    "visits or clustering of events, and give planning-useful observations. If the answer is not "
-    "in the data, say so plainly — never invent values."
+    "You are a senior fleet maintenance planning analyst for an airline. A summary of the current "
+    "fleet is provided below, and you ALSO have tools to query the full projection and LLP data on "
+    "demand — use them whenever a question needs detail beyond the summary. Tools: unit_events "
+    "(all projected events for an engine/APU/landing-gear/propeller/tail), llps (life-limited parts "
+    "for an engine, sorted soonest-first — use this to find which LLP hits first), search_events "
+    "(filter projected events), unit_status (current readings for a unit or tail). Always call a "
+    "tool rather than saying data is missing. Be concise and specific: cite numbers, tail/serial "
+    "IDs and dates; flag risks. Never invent values — if a tool returns nothing, say so."
 )
+
+
+# ── AI tools: let the analyst query the FULL uploaded data + projection ──
+def _tool_unit_events(unit_id: str):
+    proj = STATE["proj"]
+    if proj is None or proj.events is None or proj.events.empty:
+        return []
+    ev = proj.events
+    m = ev[ev["Unit_ID"].astype(str).str.upper() == str(unit_id).upper()]
+    return [{"date": _date(r["Date"]), "event": _str(r["Event"]),
+             "driver": _str(r["Driver"]), "reason": _str(r["Reason"])}
+            for _, r in m.sort_values("Date").head(120).iterrows()]
+
+
+def _tool_llps(unit_id: str):
+    reg = STATE["ds"].get("LLP_Registry")
+    if reg is None or reg.empty:
+        return []
+    m = reg[reg["Unit_ID"].astype(str).str.upper() == str(unit_id).upper()].copy()
+    if m.empty:
+        return []
+    m["_togo"] = pd.to_numeric(m.get("ToGo"), errors="coerce")
+    m = m.sort_values("_togo", na_position="last")
+    return [{"part": _str(r.get("Description")), "pn": _str(r.get("LLP_PN")),
+             "sn": _str(r.get("LLP_SN")), "limit_cycles": _num(r.get("Limit_Cycles")),
+             "cycles_to_go": _num(r.get("ToGo")), "slsv": _num(r.get("SLSV")),
+             "expected_date": _date(r.get("Expected_Date"))}
+            for _, r in m.head(80).iterrows()]
+
+
+def _tool_search_events(kind=None, unit_type=None, event=None, tail=None, unit=None, limit=60):
+    evs = _events(STATE["ds"])
+
+    def ok(e):
+        return ((not kind or e["kind"].lower() == str(kind).lower())
+                and (not unit_type or str(unit_type).lower() in e["type"].lower())
+                and (not event or str(event).lower() in e["event"].lower())
+                and (not tail or e["tail"].upper() == str(tail).upper())
+                and (not unit or e["unit"].upper() == str(unit).upper()))
+    return sorted([e for e in evs if ok(e)], key=lambda e: e["dueDate"])[: int(limit or 60)]
+
+
+def _tool_unit_status(unit_or_tail: str):
+    u = str(unit_or_tail).upper()
+    return [r for r in _status_rows(STATE["ds"]) if r["unit"].upper() == u or r["tail"].upper() == u][:80]
+
+
+_TOOLS = [
+    {"name": "unit_events", "description": "All projected shop-visit/LLP events for one unit (engine serial, APU serial, landing-gear id, propeller id, or aircraft tail), sorted by date.",
+     "input_schema": {"type": "object", "properties": {"unit_id": {"type": "string"}}, "required": ["unit_id"]}},
+    {"name": "llps", "description": "Life-limited parts for an engine serial, sorted soonest-first (smallest cycles_to_go). Use to find which LLP hits first.",
+     "input_schema": {"type": "object", "properties": {"unit_id": {"type": "string"}}, "required": ["unit_id"]}},
+    {"name": "search_events", "description": "Search projected events with optional filters (kind, unit_type, event, tail, unit).",
+     "input_schema": {"type": "object", "properties": {"kind": {"type": "string"}, "unit_type": {"type": "string"}, "event": {"type": "string"}, "tail": {"type": "string"}, "unit": {"type": "string"}, "limit": {"type": "integer"}}}},
+    {"name": "unit_status", "description": "Current status (since-last, limit, remaining, TSN/CSN) for a unit serial or an aircraft tail.",
+     "input_schema": {"type": "object", "properties": {"unit_or_tail": {"type": "string"}}, "required": ["unit_or_tail"]}},
+]
+
+
+def _dispatch(name, inp):
+    try:
+        inp = inp or {}
+        if name == "unit_events":
+            return _tool_unit_events(inp.get("unit_id", ""))
+        if name == "llps":
+            return _tool_llps(inp.get("unit_id", ""))
+        if name == "search_events":
+            return _tool_search_events(**inp)
+        if name == "unit_status":
+            return _tool_unit_status(inp.get("unit_or_tail", ""))
+    except Exception as e:
+        return {"error": str(e)}
+    return {"error": "unknown tool"}
 
 
 def _ai_context(ds) -> str:
@@ -616,20 +692,34 @@ async def ai_ask(body: dict):
     if not key:
         raise HTTPException(400, "No ANTHROPIC_API_KEY configured on the server.")
     try:
+        import json as _json
         import anthropic
         import httpx2
         # Anaconda's bundled decompressor is broken for this SDK's httpx2 stack;
         # request identity (uncompressed) responses to bypass it.
         client = anthropic.Anthropic(
             api_key=key,
-            http_client=httpx2.Client(headers={"accept-encoding": "identity"}, timeout=60))
-        msg = client.messages.create(
-            model="claude-opus-4-8", max_tokens=2000,
-            thinking={"type": "adaptive"}, system=_AI_SYSTEM,
-            messages=[{"role": "user", "content": f"{_ai_context(ds)}\n\nQUESTION: {question}"}],
-        )
-        answer = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-        return {"answer": answer.strip()}
+            http_client=httpx2.Client(headers={"accept-encoding": "identity"}, timeout=90))
+        messages = [{"role": "user", "content": f"{_ai_context(ds)}\n\nQUESTION: {question}"}]
+        answer = ""
+        for _ in range(6):   # tool-use loop
+            msg = client.messages.create(
+                model="claude-opus-4-8", max_tokens=3000,
+                thinking={"type": "adaptive"}, system=_AI_SYSTEM,
+                tools=_TOOLS, messages=messages)
+            if msg.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": msg.content})
+                results = []
+                for b in msg.content:
+                    if getattr(b, "type", "") == "tool_use":
+                        out = _dispatch(b.name, b.input)
+                        results.append({"type": "tool_result", "tool_use_id": b.id,
+                                        "content": _json.dumps(out)[:12000]})
+                messages.append({"role": "user", "content": results})
+                continue
+            answer = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            break
+        return {"answer": answer.strip() or "No answer produced."}
     except Exception as e:
         raise HTTPException(502, f"AI request failed: {e}")
 
