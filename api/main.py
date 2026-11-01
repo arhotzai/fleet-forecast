@@ -2,8 +2,8 @@
 Fleet Forecast — REST API (Phase 1, no database).
 
 A thin FastAPI layer over the proven Python engine in ``src/fleet_erp``.
-Upload a workbook → it is parsed and projected → results are served as JSON
-for the Lovable React UI. State lives in memory keyed by a session id.
+Endpoints and JSON shapes match the Lovable React UI's contract
+(src/types.ts / src/lib/api.ts): a single "current" dataset, no session id.
 
 IMPORTANT: nothing about the fleet is hardcoded. Unit kinds, types, events,
 drivers and limits are all read from the uploaded file — the file dictates
@@ -14,7 +14,6 @@ from __future__ import annotations
 import io
 import os
 import sys
-import uuid
 
 import numpy as np
 import pandas as pd
@@ -22,7 +21,6 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-# make src/ importable
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
@@ -31,104 +29,77 @@ from fleet_erp.technical import engine               # noqa: E402
 from fleet_erp.export.excel import build_workbook     # noqa: E402
 
 app = FastAPI(title="Fleet Forecast API", version="1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
+                   allow_methods=["*"], allow_headers=["*"])
 
-# Dev CORS — allow the local Vite dev server and Lovable/Vercel previews.
-# Tighten allow_origins to your real UI domain(s) before production.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# in-memory session store: {session_id: {"ds":..., "proj":...}}
-SESSIONS: dict[str, dict] = {}
+# single in-memory dataset (Phase 1, no DB). None until a workbook is uploaded.
+STATE: dict = {"ds": None, "proj": None, "airline": ""}
 _SAMPLE = os.path.join(_ROOT, "assets", "SAMPLE_fleet_database.xlsx")
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-# ───────────────────────── helpers ─────────────────────────
-def _num(v):
-    """JSON-safe number or None."""
+# ───────────────────────── json helpers ─────────────────────────
+def _num(v, default=0):
     try:
         f = float(v)
     except (TypeError, ValueError):
-        return None
+        return default
     if pd.isna(f):
-        return None
+        return default
     return int(f) if f == int(f) else round(f, 2)
 
 
-def _str(v):
+def _numN(v):   # nullable number
+    r = _num(v, None)
+    return r
+
+
+def _str(v, default=""):
     if v is None:
-        return None
+        return default
     try:
         if pd.isna(v):
-            return None
+            return default
     except (TypeError, ValueError):
         pass
-    s = str(v).strip()
-    return s or None
+    return str(v).strip() or default
 
 
-def _date(v):
+def _date(v, default=""):
     try:
         if pd.isna(v):
-            return None
+            return default
     except (TypeError, ValueError):
         pass
     try:
         return pd.to_datetime(v).strftime("%Y-%m-%d")
     except (TypeError, ValueError):
-        return _str(v)
+        return _str(v, default)
 
 
-def _records(df: pd.DataFrame) -> list[dict]:
-    """Serialize an arbitrary DataFrame to JSON-safe records."""
-    if df is None or df.empty:
-        return []
-    out = []
-    for _, r in df.iterrows():
-        row = {}
-        for c in df.columns:
-            v = r[c]
-            if isinstance(v, (pd.Timestamp,)):
-                row[str(c)] = _date(v)
-            elif isinstance(v, (int, float, np.integer, np.floating)):
-                row[str(c)] = _num(v)
-            else:
-                row[str(c)] = _str(v)
-        out.append(row)
-    return out
+# ───────────────────── display mappers (data-driven) ─────────────────────
+def _kind(k: str) -> str:
+    u = str(k).upper()
+    return {"AIRFRAME": "Airframe", "ENGINE": "Engine", "APU": "APU",
+            "PROPELLER": "Propeller"}.get(u, u.replace("_", " ").title())
 
 
-def _session(sid: str) -> dict:
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(status_code=404, detail="Unknown or expired session. Re-upload the workbook.")
-    return s
+def _category(k: str) -> str:
+    u = str(k).upper()
+    return {"AIRFRAME": "Airframe check", "ENGINE": "Engine", "APU": "APU",
+            "PROPELLER": "Propeller"}.get(u, u.replace("_", " ").title())
 
 
-def _active_today(fl: pd.DataFrame) -> pd.DataFrame:
-    """Aircraft in service today: Delivery ≤ today ≤ Redelivery (or Extension)."""
-    if fl is None or fl.empty:
-        return fl
-    d = fl.copy()
-    for c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
-        if c in d.columns:
-            d[c] = pd.to_datetime(d[c], errors="coerce")
-    today = pd.Timestamp.today().normalize()
-    end = None
-    if "Redelivery_Date" in d.columns:
-        end = d["Redelivery_Date"]
-    if "Extension_Date" in d.columns:
-        end = d["Extension_Date"].fillna(end) if end is not None else d["Extension_Date"]
-    m = pd.Series(True, index=d.index)
-    if "Delivery_Date" in d.columns:
-        m &= d["Delivery_Date"].isna() | (d["Delivery_Date"] <= today)
-    if end is not None:
-        m &= end.isna() | (end >= today)
-    return d[m]
+def _driver(d: str) -> str:
+    u = str(d).upper()
+    if u.startswith("CAL") or u == "CLND":
+        return "Calendar"
+    return "FC" if u == "FC" else "FH"
+
+
+def _reason(trigger: str) -> str:
+    return {"LLP_REPLACEMENT": "llp", "HARD_LINK": "hard",
+            "SOFT_BUNDLE": "soft", "LIMIT": "limit"}.get(str(trigger), "limit")
 
 
 def _big_cat(name: str) -> str:
@@ -142,88 +113,88 @@ def _big_cat(name: str) -> str:
     return "Other"
 
 
-# engine-model → aircraft category is derived from the engine TYPE string in the
-# file; this is a grouping heuristic for the KPI cards, not a fleet definition.
 _ENG_CAT = {"PW1100": "NEO", "PW1500": "NEO", "LEAP": "NEO",
             "V2500": "CEO", "CFM56": "CEO", "PW127": "ATR"}
+_POSL = {"LHENG": "LH", "RHENG": "RH", "APU": "APU", "LHPROP": "LH", "RHPROP": "RH",
+         "AIRFRAME": "—", "SPARE": "Spare"}
 
 
-def _snapshot_date(ds) -> str | None:
+def _ds():
+    if STATE["ds"] is None:
+        return None
+    return STATE["ds"]
+
+
+def _is_spare(tail) -> bool:
+    return tail is None or str(tail).strip() in ("", "nan", "None")
+
+
+# ───────────────────── derived lookups (per request) ─────────────────────
+def _tail_family(ds) -> dict:
+    fleet = ds.get("Fleet")
+    out = {}
+    if fleet is not None and not fleet.empty:
+        for _, r in fleet.iterrows():
+            out[str(r["Tail"])] = _big_cat(r.get("Aircraft_Family"))
+    return out
+
+
+def _util_by_tail(ds) -> dict:
+    u = ds.get("Utilization")
+    out = {}
+    if u is not None and not u.empty:
+        for _, r in u.iterrows():
+            out[str(r["Unit_ID"])] = (_num(r.get("Annual_FH")), _num(r.get("Annual_FC")))
+    return out
+
+
+def _snapshot_date(ds):
     cfg = ds.get("Config")
     if cfg is not None and not cfg.empty and "Setting" in cfg.columns:
         m = cfg[cfg["Setting"].astype(str) == "As_Of_Date"]
         if not m.empty:
             return _date(m.iloc[0]["Value"])
-    return None
+    return ""
 
 
-# ───────────────────────── routes ─────────────────────────
-@app.get("/")
-def root():
-    return {"service": "Fleet Forecast API", "status": "ok",
-            "sessions": len(SESSIONS),
-            "docs": "/docs", "sample": "/api/sample"}
+def _active_today(fl):
+    if fl is None or fl.empty:
+        return fl
+    d = fl.copy()
+    for c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
+        if c in d.columns:
+            d[c] = pd.to_datetime(d[c], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+    end = d["Redelivery_Date"] if "Redelivery_Date" in d.columns else None
+    if "Extension_Date" in d.columns:
+        end = d["Extension_Date"].fillna(end) if end is not None else d["Extension_Date"]
+    m = pd.Series(True, index=d.index)
+    if "Delivery_Date" in d.columns:
+        m &= d["Delivery_Date"].isna() | (d["Delivery_Date"] <= today)
+    if end is not None:
+        m &= end.isna() | (end >= today)
+    return d[m]
 
 
-@app.get("/api/sample")
-def sample():
-    if not os.path.exists(_SAMPLE):
-        raise HTTPException(404, "Sample workbook not bundled.")
-    return StreamingResponse(
-        open(_SAMPLE, "rb"),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=SAMPLE_fleet_database.xlsx"})
-
-
-@app.post("/api/session/upload")
-async def upload(file: UploadFile = File(...)):
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "Empty file.")
-    try:
-        ds = load(raw)
-        proj = engine.run(ds)
-    except Exception as e:  # surface parse/projection errors cleanly
-        raise HTTPException(422, f"Could not process workbook: {e}")
-    sid = uuid.uuid4().hex
-    SESSIONS[sid] = {"ds": ds, "proj": proj}
-    return {"session_id": sid,
-            "snapshot_date": _snapshot_date(ds),
-            "warnings": list(ds.warnings)}
-
-
-@app.get("/api/{sid}/overview")
-def overview(sid: str):
-    ds = _session(sid)["ds"]
+# ───────────────────────── builders ─────────────────────────
+def _aircraft_list(ds) -> list[dict]:
     fleet = ds.get("Fleet")
-    active = _active_today(fleet)
-    cat = {"NEO": 0, "CEO": 0, "ATR": 0}
-    if active is not None and not active.empty and "Aircraft_Family" in active.columns:
-        for fam, cnt in active["Aircraft_Family"].value_counts().items():
-            c = _big_cat(fam)
-            if c in cat:
-                cat[c] += int(cnt)
-    total = int(active["Tail"].nunique()) if (active is not None and not active.empty) else 0
-
-    sp = {"NEO": 0, "CEO": 0, "ATR": 0}
-    n_apu = 0
-    comp = ds.get("Components")
-    if comp is not None and not comp.empty and "Installed_On_Tail" in comp.columns:
-        free = (comp["Installed_On_Tail"].isna()
-                | comp["Installed_On_Tail"].astype(str).str.strip().isin(["", "nan", "None"]))
-        for et, cnt in comp[(comp["Unit_Kind"] == "ENGINE") & free]["Unit_Type"].value_counts().items():
-            c = _ENG_CAT.get(str(et))
-            if c in sp:
-                sp[c] += int(cnt)
-        n_apu = int(((comp["Unit_Kind"] == "APU") & free).sum())
-
-    return {"snapshot_date": _snapshot_date(ds),
-            "fleet": {"total": total, "neo": cat["NEO"], "ceo": cat["CEO"], "atr": cat["ATR"]},
-            "spares": {"neo_eng": sp["NEO"], "ceo_eng": sp["CEO"], "atr_eng": sp["ATR"], "apu": n_apu}}
-
-
-_POSL = {"LHENG": "LH", "RHENG": "RH", "APU": "APU", "LHPROP": "LH", "RHPROP": "RH",
-         "AIRFRAME": "—", "SPARE": "Spare"}
+    if fleet is None or fleet.empty:
+        return []
+    util = _util_by_tail(ds)
+    out = []
+    for _, r in fleet.iterrows():
+        tail = str(r["Tail"])
+        fh, fc = util.get(tail, (0, 0))
+        out.append({
+            "tail": tail, "msn": _num(r.get("MSN")),
+            "family": _big_cat(r.get("Aircraft_Family")),
+            "type": _str(r.get("Aircraft_Family")),
+            "owner": _str(r.get("Operator")), "lessor": _str(r.get("Owner")),
+            "deliveryDate": _date(r.get("Delivery_Date")),
+            "fhYear": fh, "fcYear": fc,
+        })
+    return out
 
 
 def _status_rows(ds) -> list[dict]:
@@ -275,147 +246,323 @@ def _status_rows(ds) -> list[dict]:
         remaining = (hln - consumed) if (pd.notna(hln) and pd.notna(consumed)) else None
         pct = round(consumed / hln * 100, 1) if (pd.notna(hln) and hln and pd.notna(consumed)) else None
         rows.append({
-            "tail": _str(tail), "unit": uid, "kind": kind, "type": utype,
-            "pos": _POSL.get(pos, pos), "event": evid, "driver": drv,
-            "sinceLastEvent": _num(consumed), "cyclesSinceSV": _num(cyc),
-            "limit": _num(hln), "remaining": _num(remaining), "pctOfLimit": _num(pct),
-            "tsnAtLsv": _num(tsn_l), "csnAtLsv": _num(csn_l),
+            "id": f"{uid}|{evid}", "tail": _str(tail), "unit": uid,
+            "kind": _kind(kind), "type": utype, "pos": _POSL.get(pos, pos),
+            "event": evid, "driver": _driver(drv),
+            "sinceLast": _num(consumed), "cyclesSinceSv": _num(cyc),
+            "limit": _num(hln), "remaining": _num(remaining), "pctLimit": _num(pct),
+            "tsnLsv": _num(tsn_l), "csnLsv": _num(csn_l),
             "tsnNow": _num(tsn), "csnNow": _num(csn), "lastSv": _date(r.get("Last_SV_Date")),
         })
-    rows.sort(key=lambda x: (x["pctOfLimit"] is None, -(x["pctOfLimit"] or 0)))
+    rows.sort(key=lambda x: -(x["pctLimit"] or 0))
     return rows
 
 
-@app.get("/api/{sid}/fleet-status")
-def fleet_status(sid: str, kind: str | None = None, type: str | None = None,
-                 event: str | None = None, tail: str | None = None):
-    ds = _session(sid)["ds"]
-    rows = _status_rows(ds)
-    # filter options are derived from the DATA, never a hardcoded list
-    filters = {
-        "kinds": sorted({r["kind"] for r in rows if r["kind"]}),
-        "types": sorted({r["type"] for r in rows if r["type"]}),
-        "events": sorted({r["event"] for r in rows if r["event"]}),
-        "tails": sorted({r["tail"] for r in rows if r["tail"]} | {r["unit"] for r in rows if r["unit"]}),
-    }
-
-    def pick(v):
-        return [s.strip() for s in v.split(",")] if v else None
-    fk, ft, fe, fl = pick(kind), pick(type), pick(event), pick(tail)
-    if fk:
-        rows = [r for r in rows if r["kind"] in fk]
-    if ft:
-        rows = [r for r in rows if r["type"] in ft]
-    if fe:
-        rows = [r for r in rows if r["event"] in fe]
-    if fl:
-        rows = [r for r in rows if r["tail"] in fl or r["unit"] in fl]
-    return {"rows": rows, "filters": filters}
-
-
-@app.get("/api/{sid}/powerplant")
-def powerplant(sid: str):
-    ds = _session(sid)["ds"]
+def _power_units(ds) -> list[dict]:
     comp = ds.get("Components")
     us = ds.get("Unit_Status")
     llp = ds.get("LLP_Registry")
+    proj = STATE["proj"]
     if comp is None or comp.empty:
-        return {"kpis": {}, "units": []}
-    pw = comp[comp["Unit_Kind"].isin(["ENGINE", "APU"])].copy()
+        return []
+    pw = comp[comp["Unit_Kind"].isin(["ENGINE", "APU"])]
     posmap = {"LHENG": "LH", "RHENG": "RH", "APU": "APU", "SPARE": "Spare"}
     agg = {}
     if us is not None and not us.empty:
         acols = {"tsn": ("TSN", "first"), "csn": ("CSN", "first"),
                  "lastSvDate": ("Last_SV_Date", "first")}
         if "TSN_At_LSV" in us.columns:
-            acols["tsnAtLsv"] = ("TSN_At_LSV", "first")
+            acols["tsnLsv"] = ("TSN_At_LSV", "first")
         if "WS_Type" in us.columns:
             acols["workscope"] = ("WS_Type", "first")
-        g = us.groupby(us["Unit_ID"].astype(str)).agg(**acols)
-        agg = g.to_dict("index")
-    lc = {}
-    if llp is not None and not llp.empty:
-        lc = llp.groupby(llp["Unit_ID"].astype(str)).size().to_dict()
-    units = []
+        agg = us.groupby(us["Unit_ID"].astype(str)).agg(**acols).to_dict("index")
+    lc = llp.groupby(llp["Unit_ID"].astype(str)).size().to_dict() if (llp is not None and not llp.empty) else {}
+    tfam = _tail_family(ds)
+    # projected shop visits per unit
+    sv = {}
+    if proj is not None and proj.events is not None and not proj.events.empty:
+        for _, e in proj.events.iterrows():
+            sv.setdefault(str(e["Unit_ID"]), []).append({
+                "date": _date(e.get("Date")), "workscope": _str(e.get("Event")),
+                "tsn": 0, "csn": 0, "vendor": ""})
+    out = []
     for _, r in pw.iterrows():
         cid = str(r["Component_ID"])
         pos = str(r.get("Position") or "")
+        tail = None if _is_spare(r.get("Installed_On_Tail")) else str(r.get("Installed_On_Tail"))
         a = agg.get(cid, {})
-        tail = _str(r.get("Installed_On_Tail"))
-        units.append({
-            "serial": cid, "type": _str(r.get("Unit_Type")), "kind": str(r["Unit_Kind"]),
-            "pos": posmap.get(pos, pos),
-            "state": "Spare" if (pos == "SPARE" or not tail) else "Installed",
-            "onTail": tail,
-            "tsn": _num(a.get("tsn")), "tsnAtLsv": _num(a.get("tsnAtLsv")),
+        utype = _str(r.get("Unit_Type"))
+        fam = tfam.get(tail) if tail else _ENG_CAT.get(utype, "Other")
+        out.append({
+            "serial": cid, "type": utype, "kind": _kind(r["Unit_Kind"]),
+            "family": fam or "Other", "position": posmap.get(pos, pos),
+            "state": "Spare" if not tail else "Installed", "onTail": tail,
+            "tsn": _num(a.get("tsn")), "tsnLsv": _num(a.get("tsnLsv")),
             "csn": _num(a.get("csn")), "lastSvDate": _date(a.get("lastSvDate")),
-            "workscope": _str(a.get("workscope")), "llps": int(lc.get(cid, 0)),
+            "workscope": _str(a.get("workscope")), "llpCount": int(lc.get(cid, 0)),
+            "shopVisits": sv.get(cid, []),
         })
-    eng = [u for u in units if u["kind"] == "ENGINE"]
-    apu = [u for u in units if u["kind"] == "APU"]
-    kpis = {
-        "installedEngines": sum(u["state"] == "Installed" for u in eng),
-        "spareEngines": sum(u["state"] == "Spare" for u in eng),
-        "installedApus": sum(u["state"] == "Installed" for u in apu),
-        "spareApus": sum(u["state"] == "Spare" for u in apu),
-    }
-    return {"kpis": kpis, "units": units}
+    return out
 
 
-@app.get("/api/{sid}/llp")
-def llp(sid: str):
-    ds = _session(sid)["ds"]
+def _events(ds) -> list[dict]:
+    proj = STATE["proj"]
+    if proj is None or proj.events is None or proj.events.empty:
+        return []
+    tfam = _tail_family(ds)
+    out = []
+    for i, e in proj.events.reset_index(drop=True).iterrows():
+        tail = _str(e.get("Tail"))
+        fam = tfam.get(tail) or _ENG_CAT.get(_str(e.get("Unit_Type")), "Other")
+        out.append({
+            "id": str(i), "tail": tail, "unit": _str(e.get("Unit_ID")),
+            "kind": _kind(e.get("Unit_Kind")), "family": fam or "Other",
+            "event": _str(e.get("Event")) or _str(e.get("Event_ID")),
+            "category": _category(e.get("Unit_Kind")),
+            "dueDate": _date(e.get("Date")), "reason": _reason(e.get("Trigger")),
+        })
+    return out
+
+
+def _llps(ds) -> list[dict]:
     reg = ds.get("LLP_Registry")
-    if reg is None or reg.empty:
-        return {"rows": []}
-    rows = []
-    for _, r in reg.iterrows():
-        rows.append({
-            "unitId": _str(r.get("Unit_ID")), "pn": _str(r.get("LLP_PN")),
-            "sn": _str(r.get("LLP_SN")), "description": _str(r.get("Description")),
-            "limitCycles": _num(r.get("Limit_Cycles")), "slsv": _num(r.get("SLSV")),
-            "toGo": _num(r.get("ToGo")), "projectedSv": _date(r.get("Expected_Date")),
-            "reason": _str(r.get("Reason")) or "",
-        })
-    return {"rows": rows}
-
-
-@app.get("/api/{sid}/projection")
-def projection(sid: str):
-    proj = _session(sid)["proj"]
-    return {"events": _records(proj.events)}
-
-
-@app.get("/api/{sid}/calendar")
-def calendar(sid: str):
-    proj = _session(sid)["proj"]
-    return {"months": _records(proj.sv_plan_v1)}
-
-
-@app.get("/api/{sid}/aircraft/{tail}")
-def aircraft(sid: str, tail: str):
-    s = _session(sid)
-    ds, proj = s["ds"], s["proj"]
-    fleet = ds.get("Fleet")
-    row = None
-    if fleet is not None and not fleet.empty:
-        m = fleet[fleet["Tail"].astype(str) == tail]
-        if not m.empty:
-            row = _records(m)[0]
-    events = proj.events
-    ev = events[events.get("Tail", pd.Series(dtype=str)).astype(str) == tail] if events is not None and not events.empty and "Tail" in events.columns else None
     comp = ds.get("Components")
-    units = comp[comp["Installed_On_Tail"].astype(str) == tail] if comp is not None and not comp.empty else None
-    return {"tail": tail, "aircraft": row,
-            "events": _records(ev) if ev is not None else [],
-            "units": _records(units) if units is not None else []}
+    if reg is None or reg.empty:
+        return []
+    etype = {}
+    if comp is not None and not comp.empty:
+        etype = dict(zip(comp["Component_ID"].astype(str), comp["Unit_Type"].astype(str)))
+    out = []
+    for i, r in reg.reset_index(drop=True).iterrows():
+        uid = _str(r.get("Unit_ID"))
+        lim = _num(r.get("Limit_Cycles"))
+        togo = _num(r.get("ToGo"))
+        out.append({
+            "id": str(i), "unit": uid, "engineType": etype.get(uid, ""),
+            "part": _str(r.get("Description")), "pn": _str(r.get("LLP_PN")),
+            "sn": _str(r.get("LLP_SN")), "limit": lim,
+            "csn": (lim - togo) if (isinstance(lim, (int, float)) and isinstance(togo, (int, float))) else _num(r.get("SLSV")),
+            "remaining": togo,
+        })
+    return out
 
 
-@app.get("/api/{sid}/export")
-def export(sid: str):
-    proj = _session(sid)["proj"]
-    data = build_workbook(proj)
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=FLEET_MAINTENANCE_PROJECTION.xlsx"})
+def _utilisation(ds) -> list[dict]:
+    fleet = ds.get("Fleet")
+    util = ds.get("Utilization")
+    if fleet is None or fleet.empty:
+        return []
+    um = {}
+    if util is not None and not util.empty:
+        for _, r in util.iterrows():
+            um[str(r["Unit_ID"])] = (_num(r.get("Annual_FH")), _num(r.get("Annual_FC")),
+                                     _num(r.get("FH_FC_Ratio")))
+    rows = {}
+    for _, r in fleet.iterrows():
+        typ = _str(r.get("Aircraft_Family"))
+        tail = str(r["Tail"])
+        fh, fc, ratio = um.get(tail, (0, 0, 0))
+        g = rows.setdefault(typ, {"family": _big_cat(typ), "type": typ, "count": 0,
+                                  "_fh": 0.0, "_fc": 0.0, "_ratio": 0.0})
+        g["count"] += 1
+        g["_fh"] += fh or 0
+        g["_fc"] += fc or 0
+        g["_ratio"] += ratio or 0
+    out = []
+    for g in rows.values():
+        n = max(g["count"], 1)
+        out.append({"family": g["family"], "type": g["type"], "count": g["count"],
+                    "fhYear": round(g["_fh"] / n), "fcYear": round(g["_fc"] / n),
+                    "ratio": round(g["_ratio"] / n, 2)})
+    return out
+
+
+def _sheets(ds) -> list[dict]:
+    out = []
+    for name, df in ds.sheets.items():
+        if df is None:
+            continue
+        cols = [str(c) for c in df.columns]
+        rows = []
+        for _, r in df.iterrows():
+            row = []
+            for c in df.columns:
+                v = r[c]
+                if isinstance(v, (int, float, np.integer, np.floating)):
+                    row.append(_num(v, 0))
+                else:
+                    row.append(_str(v))
+            rows.append(row)
+        out.append({"name": name, "columns": cols, "rows": rows})
+    return out
+
+
+def _sheets_to_bytes(sheets) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        for sh in sheets:
+            name = sh["name"][:31] if isinstance(sh, dict) else sh.name[:31]
+            cols = sh["columns"] if isinstance(sh, dict) else sh.columns
+            rows = sh["rows"] if isinstance(sh, dict) else sh.rows
+            pd.DataFrame(rows, columns=cols).to_excel(w, sheet_name=name, index=False)
+    return buf.getvalue()
+
+
+# ───────────────────────── routes ─────────────────────────
+@app.get("/")
+def root():
+    return {"service": "Fleet Forecast API", "status": "ok",
+            "loaded": STATE["ds"] is not None, "docs": "/docs"}
+
+
+@app.get("/snapshot")
+def snapshot():
+    ds = _ds()
+    if ds is None:
+        return {"date": "", "airline": "", "loaded": False}
+    return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
+
+
+@app.get("/fleet/summary")
+def summary():
+    ds = _ds()
+    if ds is None:
+        return {"liveTotal": 0, "neo": 0, "ceo": 0, "atr": 0,
+                "spareNeoEngines": 0, "spareCeoEngines": 0, "spareAtrEngines": 0, "spareApus": 0}
+    active = _active_today(ds.get("Fleet"))
+    cat = {"NEO": 0, "CEO": 0, "ATR": 0}
+    if active is not None and not active.empty and "Aircraft_Family" in active.columns:
+        for fam, cnt in active["Aircraft_Family"].value_counts().items():
+            c = _big_cat(fam)
+            if c in cat:
+                cat[c] += int(cnt)
+    total = int(active["Tail"].nunique()) if (active is not None and not active.empty) else 0
+    sp = {"NEO": 0, "CEO": 0, "ATR": 0}
+    n_apu = 0
+    comp = ds.get("Components")
+    if comp is not None and not comp.empty and "Installed_On_Tail" in comp.columns:
+        free = (comp["Installed_On_Tail"].isna()
+                | comp["Installed_On_Tail"].astype(str).str.strip().isin(["", "nan", "None"]))
+        for et, cnt in comp[(comp["Unit_Kind"] == "ENGINE") & free]["Unit_Type"].value_counts().items():
+            c = _ENG_CAT.get(str(et))
+            if c in sp:
+                sp[c] += int(cnt)
+        n_apu = int(((comp["Unit_Kind"] == "APU") & free).sum())
+    return {"liveTotal": total, "neo": cat["NEO"], "ceo": cat["CEO"], "atr": cat["ATR"],
+            "spareNeoEngines": sp["NEO"], "spareCeoEngines": sp["CEO"],
+            "spareAtrEngines": sp["ATR"], "spareApus": n_apu}
+
+
+@app.get("/fleet/aircraft")
+def fleet_aircraft():
+    ds = _ds()
+    return _aircraft_list(ds) if ds is not None else []
+
+
+@app.get("/fleet/status")
+def fleet_status():
+    ds = _ds()
+    return _status_rows(ds) if ds is not None else []
+
+
+@app.get("/forecast/events")
+def forecast_events():
+    ds = _ds()
+    return _events(ds) if ds is not None else []
+
+
+@app.get("/llps")
+def llps():
+    ds = _ds()
+    return _llps(ds) if ds is not None else []
+
+
+@app.get("/powerplant/units")
+def powerplant_units():
+    ds = _ds()
+    return _power_units(ds) if ds is not None else []
+
+
+@app.get("/fleet/utilisation")
+def fleet_utilisation():
+    ds = _ds()
+    return _utilisation(ds) if ds is not None else []
+
+
+@app.get("/data/sheets")
+def data_sheets():
+    ds = _ds()
+    return _sheets(ds) if ds is not None else []
+
+
+@app.get("/fleet/aircraft/{tail}")
+def aircraft_detail(tail: str):
+    ds = _ds()
+    if ds is None:
+        return None
+    ac = next((a for a in _aircraft_list(ds) if a["tail"] == tail), None)
+    if ac is None:
+        raise HTTPException(404, "Unknown tail")
+    status = _status_rows(ds)
+    power = _power_units(ds)
+    evs = _events(ds)
+    engines = [u for u in power if u["onTail"] == tail and u["kind"] == "Engine"]
+    apus = [u for u in power if u["onTail"] == tail and u["kind"] == "APU"]
+    return {
+        "aircraft": ac,
+        "checks": [s for s in status if s["tail"] == tail and s["kind"] == "Airframe"],
+        "engines": engines,
+        "apu": apus[0] if apus else None,
+        "propellers": [s for s in status if s["tail"] == tail and s["kind"] == "Propeller"],
+        "events": [e for e in evs if e["tail"] == tail],
+    }
+
+
+@app.post("/data/upload")
+async def data_upload(file: UploadFile = File(...)):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty file.")
+    try:
+        ds = load(raw)
+        proj = engine.run(ds)
+    except Exception as e:
+        raise HTTPException(422, f"Could not process workbook: {e}")
+    STATE["ds"], STATE["proj"] = ds, proj
+    fleet = ds.get("Fleet")
+    STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
+    return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
+
+
+@app.put("/data/sheets")
+async def put_sheets(sheets: list[dict]):
+    try:
+        raw = _sheets_to_bytes(sheets)
+        ds = load(raw)
+        proj = engine.run(ds)
+    except Exception as e:
+        raise HTTPException(422, f"Could not apply edits: {e}")
+    STATE["ds"], STATE["proj"] = ds, proj
+    return {"ok": True}
+
+
+@app.get("/export/{name}")
+def export(name: str):
+    ds = _ds()
+    if name == "sample":
+        if not os.path.exists(_SAMPLE):
+            raise HTTPException(404, "Sample not bundled.")
+        return StreamingResponse(open(_SAMPLE, "rb"), media_type=_XLSX,
+                                 headers={"Content-Disposition": "attachment; filename=SAMPLE_fleet_database.xlsx"})
+    if ds is None:
+        raise HTTPException(404, "No data loaded. Upload a workbook first.")
+    if name == "projection":
+        data = build_workbook(STATE["proj"])
+        fn = "FLEET_MAINTENANCE_PROJECTION.xlsx"
+    elif name == "workbook":
+        data = _sheets_to_bytes(_sheets(ds))
+        fn = "fleet_database.xlsx"
+    else:
+        raise HTTPException(404, "Unknown export")
+    return StreamingResponse(io.BytesIO(data), media_type=_XLSX,
+                             headers={"Content-Disposition": f"attachment; filename={fn}"})
