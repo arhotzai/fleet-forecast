@@ -36,6 +36,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 STATE: dict = {"ds": None, "ds0": None, "proj": None, "airline": ""}
 _SAMPLE = os.path.join(_ROOT, "assets", "SAMPLE_fleet_database.xlsx")
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# last-uploaded workbook, cached so a backend restart doesn't lose the session (gitignored)
+_CACHE = os.path.join(_ROOT, "data", ".session_cache.xlsx")
 
 # load backend secrets (ANTHROPIC_API_KEY, …) from .env.local if present — gitignored
 _ENV = os.path.join(_ROOT, ".env.local")
@@ -620,7 +622,26 @@ async def data_upload(file: UploadFile = File(...)):
     STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
+    try:   # cache so a backend restart restores the session
+        with open(_CACHE, "wb") as _c:
+            _c.write(raw)
+    except OSError:
+        pass
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
+
+
+def _restore_session():
+    """On startup, reload the last-uploaded workbook so a restart keeps the data."""
+    if STATE["ds"] is not None or not os.path.exists(_CACHE):
+        return
+    try:
+        raw = open(_CACHE, "rb").read()
+        ds = load(raw)
+        STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, engine.run(ds)
+        fleet = ds.get("Fleet")
+        STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
+    except Exception:
+        pass
 
 
 @app.put("/data/sheets")
@@ -865,3 +886,7 @@ def export(name: str):
         raise HTTPException(404, "Unknown export")
     return StreamingResponse(io.BytesIO(data), media_type=_XLSX,
                              headers={"Content-Disposition": f"attachment; filename={fn}"})
+
+
+# restore the last session on startup (survives restarts)
+_restore_session()
