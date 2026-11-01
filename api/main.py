@@ -192,12 +192,12 @@ def _active_today(fl, ref=None):
 
 
 # ───────────────────────── builders ─────────────────────────
-def _aircraft_list(ds) -> list[dict]:
+def _aircraft_list(ds, ref=None) -> list[dict]:
     fleet = ds.get("Fleet")
     if fleet is None or fleet.empty:
         return []
     util = _util_by_tail(ds)
-    active_tails = set(_active_today(fleet, _as_of_ts(ds))["Tail"].astype(str))
+    active_tails = set(_active_today(fleet, ref if ref is not None else _as_of_ts(ds))["Tail"].astype(str))
     out = []
     for _, r in fleet.iterrows():
         tail = str(r["Tail"])
@@ -483,9 +483,12 @@ def summary():
 
 
 @app.get("/fleet/aircraft")
-def fleet_aircraft():
+def fleet_aircraft(as_of: str | None = None):
     ds = _ds()
-    return _aircraft_list(ds) if ds is not None else []
+    if ds is None:
+        return []
+    ref = pd.to_datetime(as_of, errors="coerce") if as_of else None
+    return _aircraft_list(ds, ref if (ref is not None and not pd.isna(ref)) else None)
 
 
 @app.get("/fleet/status")
@@ -594,46 +597,6 @@ async def data_upload(file: UploadFile = File(...)):
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
-
-
-@app.post("/config/as-of")
-async def set_as_of(body: dict):
-    """Re-run the whole fleet 'as of' a chosen date: advance every unit's readings
-    from the file's snapshot to that date, then re-project. Driven by the data."""
-    base = STATE.get("ds0")
-    if base is None:
-        raise HTTPException(400, "Upload a workbook first.")
-    new = pd.to_datetime((body or {}).get("date"), errors="coerce")
-    if pd.isna(new):
-        raise HTTPException(400, "Invalid date.")
-    orig = pd.to_datetime(_snapshot_date(base), errors="coerce")
-    months = 0.0 if pd.isna(orig) else (
-        (new.year - orig.year) * 12 + (new.month - orig.month) + (new.day - orig.day) / 30.4375)
-    sheets = {k: v.copy() for k, v in base.sheets.items()}
-    util = sheets.get("Utilization")
-    rate = {}
-    if util is not None and not util.empty:
-        for _, r in util.iterrows():
-            rate[str(r["Unit_ID"])] = (_num(r.get("Annual_FH")) or 0.0, _num(r.get("Annual_FC")) or 0.0)
-    us = sheets.get("Unit_Status")
-    if us is not None and not us.empty and months:
-        for col in ("SLSV_Months", "SLSV_FH", "SLSV_FC", "TSN", "CSN"):
-            if col in us.columns:
-                us[col] = pd.to_numeric(us[col], errors="coerce").astype(float)
-        for i, r in us.iterrows():
-            afh, afc = rate.get(str(r["Unit_ID"]), (0.0, 0.0))
-            for col, inc in (("SLSV_Months", months), ("SLSV_FH", afh * months / 12.0),
-                             ("SLSV_FC", afc * months / 12.0), ("TSN", afh * months / 12.0),
-                             ("CSN", afc * months / 12.0)):
-                v = pd.to_numeric(r.get(col), errors="coerce")
-                if pd.notna(v):
-                    us.at[i, col] = max(0.0, v + inc)
-    cfg = sheets.get("Config")
-    if cfg is not None and "Setting" in cfg.columns:
-        cfg.loc[cfg["Setting"].astype(str) == "As_Of_Date", "Value"] = new.strftime("%Y-%m-%d")
-    ds = Dataset(sheets=sheets, issues=list(base.issues))
-    STATE["ds"], STATE["proj"] = ds, engine.run(ds)
-    return {"date": new.strftime("%Y-%m-%d"), "airline": STATE["airline"], "loaded": True}
 
 
 @app.put("/data/sheets")
