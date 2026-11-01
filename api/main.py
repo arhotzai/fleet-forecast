@@ -349,6 +349,9 @@ def _events(ds) -> list[dict]:
             "category": _category(e.get("Unit_Kind")),
             "dueDate": _date(e.get("Date")), "reason": _reason(e.get("Trigger")),
             "reasonText": _str(e.get("Reason")),   # full descriptive wording from the engine
+            "position": {"AIRFRAME": "AIRFRAME", "LHENG": "LH", "RHENG": "RH", "APU": "APU",
+                         "LHPROP": "LH", "RHPROP": "RH", "LG": "LG", "SPARE": "SPARE"}
+                        .get(_str(e.get("Position")), _str(e.get("Position"))),
         })
     return out
 
@@ -406,10 +409,13 @@ def _utilisation(ds) -> list[dict]:
     return out
 
 
+_SKIP_SHEETS = {"Instructions", "_Lists"}
+
+
 def _sheets(ds) -> list[dict]:
     out = []
     for name, df in ds.sheets.items():
-        if df is None:
+        if df is None or name in _SKIP_SHEETS:
             continue
         cols = [str(c) for c in df.columns]
         rows = []
@@ -558,6 +564,23 @@ def utilisation_units():
 def data_sheets():
     ds = _ds()
     return _sheets(ds) if ds is not None else []
+
+
+@app.get("/data/sheets/names")
+def data_sheet_names():
+    ds = _ds()
+    return [s["name"] for s in _sheets(ds)] if ds is not None else []
+
+
+@app.get("/data/sheets/{name}")
+def data_sheet_one(name: str):
+    ds = _ds()
+    if ds is None:
+        raise HTTPException(404, "No data loaded.")
+    for s in _sheets(ds):
+        if s["name"] == name:
+            return s
+    raise HTTPException(404, "Unknown sheet")
 
 
 @app.get("/fleet/aircraft/{tail}")
@@ -773,6 +796,52 @@ async def ai_ask(body: dict):
         return {"answer": answer.strip() or "No answer produced."}
     except Exception as e:
         raise HTTPException(502, f"AI request failed: {e}")
+
+
+@app.post("/report")
+def fleet_report():
+    """Claude-generated executive Fleet Update Report (markdown) from the loaded data."""
+    ds = _ds()
+    if ds is None:
+        raise HTTPException(400, "Upload a workbook first.")
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(400, "No ANTHROPIC_API_KEY configured on the server.")
+    try:
+        import anthropic
+        import httpx2
+        client = anthropic.Anthropic(
+            api_key=key,
+            http_client=httpx2.Client(headers={"accept-encoding": "identity"}, timeout=120))
+        instr = (
+            "Write an executive FLEET MAINTENANCE UPDATE REPORT in clean markdown for a McKinsey-style "
+            "briefing. Use '## ' section headings and short bullet lists. Sections: Executive Summary; "
+            "Fleet Composition & Ownership; Near-Term Maintenance Outlook (next 12 months — due shop "
+            "visits and clustering); Overdue & At-Risk Items (prioritised, with tail/serial and %used); "
+            "Spare-Engine Coverage & Risk; Recommendations. Cite concrete numbers and IDs; be concise, "
+            "insight-led and board-ready. Do not invent values.")
+        msg = client.messages.create(
+            model="claude-opus-4-8", max_tokens=4000, thinking={"type": "adaptive"},
+            system=_AI_SYSTEM, tools=_TOOLS,
+            messages=[{"role": "user", "content": f"{_ai_context(ds)}\n\n{instr}"}])
+        import json as _json
+        messages = [{"role": "user", "content": f"{_ai_context(ds)}\n\n{instr}"}]
+        for _ in range(5):
+            if msg.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": msg.content})
+                results = [{"type": "tool_result", "tool_use_id": b.id,
+                            "content": _json.dumps(_dispatch(b.name, b.input))[:12000]}
+                           for b in msg.content if getattr(b, "type", "") == "tool_use"]
+                messages.append({"role": "user", "content": results})
+                msg = client.messages.create(
+                    model="claude-opus-4-8", max_tokens=4000, thinking={"type": "adaptive"},
+                    system=_AI_SYSTEM, tools=_TOOLS, messages=messages)
+                continue
+            break
+        report = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        return {"report": report.strip(), "snapshot": _snapshot_date(ds), "airline": STATE["airline"]}
+    except Exception as e:
+        raise HTTPException(502, f"Report failed: {e}")
 
 
 @app.get("/export/{name}")
