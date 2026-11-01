@@ -495,6 +495,22 @@ def run(ds: Dataset) -> Projection:
                           init_status, [], links_by_type.get(ut, []), None,
                           dates, out_events, out_status, out_series)
 
+    # 1c) installed landing gear (belongs to the tail; nose + MLG LH/RH)
+    if not units.empty:
+        for _, r in units.iterrows():
+            uid = _cid(r)
+            if uid in installed or str(r.get("Unit_Kind") or "") != "LANDING_GEAR":
+                continue
+            tail = str(r.get("Installed_On_Tail") or "").strip()
+            if not tail:
+                continue
+            installed.add(uid)
+            ut = str(r.get("Unit_Type") or "")
+            _project_unit(uid, ut, "LANDING_GEAR", tail, str(r.get("Position") or "LG"),
+                          events_by_type.get(ut, []), util_map.get(tail),
+                          init_status, [], links_by_type.get(ut, []), None,
+                          dates, out_events, out_status, out_series)
+
     # 2) spares (units in the Units sheet not installed on any aircraft)
     if not units.empty:
         for _, r in units.iterrows():
