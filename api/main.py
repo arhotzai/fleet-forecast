@@ -333,6 +333,7 @@ def _events(ds) -> list[dict]:
             "event": _str(e.get("Event")) or _str(e.get("Event_ID")),
             "category": _category(e.get("Unit_Kind")),
             "dueDate": _date(e.get("Date")), "reason": _reason(e.get("Trigger")),
+            "reasonText": _str(e.get("Reason")),   # full descriptive wording from the engine
         })
     return out
 
