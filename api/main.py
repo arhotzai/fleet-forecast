@@ -312,11 +312,14 @@ def _events(ds) -> list[dict]:
     tfam = _tail_family(ds)
     out = []
     for i, e in proj.events.reset_index(drop=True).iterrows():
-        tail = _str(e.get("Tail"))
-        fam = tfam.get(tail) or _ENG_CAT.get(_str(e.get("Unit_Type")), "Other")
+        raw_tail = _str(e.get("Tail"))
+        unit = _str(e.get("Unit_ID"))
+        is_spare = raw_tail in ("", "SPARE")
+        tail = unit if is_spare else raw_tail      # spares shown by their own serial
+        fam = "Spares" if is_spare else (tfam.get(raw_tail) or _ENG_CAT.get(_str(e.get("Unit_Type"))) or "Other")
         out.append({
-            "id": str(i), "tail": tail, "unit": _str(e.get("Unit_ID")),
-            "kind": _kind(e.get("Unit_Kind")), "family": fam or "Other",
+            "id": str(i), "tail": tail, "unit": unit,
+            "kind": _kind(e.get("Unit_Kind")), "family": fam,
             "event": _str(e.get("Event")) or _str(e.get("Event_ID")),
             "category": _category(e.get("Unit_Kind")),
             "dueDate": _date(e.get("Date")), "reason": _reason(e.get("Trigger")),
