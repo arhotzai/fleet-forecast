@@ -375,6 +375,7 @@ def _llps(ds) -> list[dict]:
             "sn": _str(r.get("LLP_SN")), "limit": lim,
             "csn": (lim - togo) if (isinstance(lim, (int, float)) and isinstance(togo, (int, float))) else _num(r.get("SLSV")),
             "remaining": togo,
+            "projectedDate": _date(r.get("Expected_Date")),   # when this LLP is projected to come due
         })
     return out
 

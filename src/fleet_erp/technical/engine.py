@@ -147,14 +147,14 @@ def _build_utilisation(ds: Dataset, dates, as_of) -> dict[str, Utilisation]:
 # ─────────────────────────────────────────────────────────────
 
 def _events_by_type(ds: Dataset) -> dict[str, list[dict]]:
-    """Return {Unit_Type: [event dicts]} from the single Events sheet."""
+    """Return {(Unit_Type, Unit_Kind): [event dicts]} from the single Events sheet."""
     out: dict[str, list[dict]] = {}
     df = ds.get("Events")
     if df.empty:
         return out
     for _, r in df.iterrows():
-        ut = str(r.get("Unit_Type"))
-        out.setdefault(ut, []).append({
+        key = (str(r.get("Unit_Type")), str(r.get("Unit_Kind")))
+        out.setdefault(key, []).append({
             "event_id": str(r.get("Event_ID")),
             "event_name": str(r.get("Event_Name") or r.get("Event_ID")),
             "driver": str(r.get("Driver") or "").upper(),
@@ -461,7 +461,7 @@ def run(ds: Dataset) -> Projection:
             fam = str(r.get("Aircraft_Family") or "")
             # airframe unit (keyed by tail)
             _project_unit(tail, fam, "AIRFRAME", tail, "AIRFRAME",
-                          events_by_type.get(fam, []), util_map.get(tail),
+                          events_by_type.get((fam, "AIRFRAME"), []), util_map.get(tail),
                           init_status, [], links_by_type.get(fam, []), None,
                           dates, out_events, out_status, out_series)
             # engines + APU
@@ -474,7 +474,7 @@ def run(ds: Dataset) -> Projection:
                 ut = unit_type.get(uid, "")
                 kind = unit_kind.get(uid) or ("APU" if pos == "APU" else "ENGINE")
                 _project_unit(uid, ut, kind, tail, pos,
-                              events_by_type.get(ut, []), util_map.get(uid),
+                              events_by_type.get((ut, kind), []), util_map.get(uid),
                               init_status, llp_by_unit.get(uid, []),
                               links_by_type.get(ut, []), llp_rules.get(ut),
                               dates, out_events, out_status, out_series)
@@ -491,7 +491,7 @@ def run(ds: Dataset) -> Projection:
             installed.add(uid)
             ut = str(r.get("Unit_Type") or "")
             _project_unit(uid, ut, "PROPELLER", tail, str(r.get("Position") or ""),
-                          events_by_type.get(ut, []), util_map.get(uid),
+                          events_by_type.get((ut, "PROPELLER"), []), util_map.get(uid),
                           init_status, [], links_by_type.get(ut, []), None,
                           dates, out_events, out_status, out_series)
 
@@ -507,7 +507,7 @@ def run(ds: Dataset) -> Projection:
             installed.add(uid)
             ut = str(r.get("Unit_Type") or "")
             _project_unit(uid, ut, "LANDING_GEAR", tail, str(r.get("Position") or "LG"),
-                          events_by_type.get(ut, []), util_map.get(tail),
+                          events_by_type.get((ut, "LANDING_GEAR"), []), util_map.get(tail),
                           init_status, [], links_by_type.get(ut, []), None,
                           dates, out_events, out_status, out_series)
 
@@ -523,7 +523,7 @@ def run(ds: Dataset) -> Projection:
             ut = str(r.get("Unit_Type") or "")
             kind = str(r.get("Unit_Kind") or "")
             _project_unit(uid, ut, kind, None, "SPARE",
-                          events_by_type.get(ut, []), util_map.get(uid),
+                          events_by_type.get((ut, kind), []), util_map.get(uid),
                           init_status, llp_by_unit.get(uid, []),
                           links_by_type.get(ut, []), llp_rules.get(ut),
                           dates, out_events, out_status, out_series)
