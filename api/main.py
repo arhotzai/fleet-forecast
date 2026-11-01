@@ -166,14 +166,20 @@ def _snapshot_date(ds):
     return ""
 
 
-def _active_today(fl):
+def _as_of_ts(ds):
+    """The reference date for 'active fleet' = the snapshot / as-of date from Config."""
+    d = pd.to_datetime(_snapshot_date(ds), errors="coerce")
+    return d if pd.notna(d) else pd.Timestamp.today().normalize()
+
+
+def _active_today(fl, ref=None):
     if fl is None or fl.empty:
         return fl
     d = fl.copy()
     for c in ("Delivery_Date", "Redelivery_Date", "Extension_Date"):
         if c in d.columns:
             d[c] = pd.to_datetime(d[c], errors="coerce")
-    today = pd.Timestamp.today().normalize()
+    today = ref if ref is not None else pd.Timestamp.today().normalize()
     end = d["Redelivery_Date"] if "Redelivery_Date" in d.columns else None
     if "Extension_Date" in d.columns:
         end = d["Extension_Date"].fillna(end) if end is not None else d["Extension_Date"]
@@ -191,6 +197,7 @@ def _aircraft_list(ds) -> list[dict]:
     if fleet is None or fleet.empty:
         return []
     util = _util_by_tail(ds)
+    active_tails = set(_active_today(fleet, _as_of_ts(ds))["Tail"].astype(str))
     out = []
     for _, r in fleet.iterrows():
         tail = str(r["Tail"])
@@ -202,6 +209,7 @@ def _aircraft_list(ds) -> list[dict]:
             "owner": _str(r.get("Operator")), "lessor": _str(r.get("Owner")),
             "leasedOwned": _str(r.get("Leased_Owned")),
             "deliveryDate": _date(r.get("Delivery_Date")),
+            "active": tail in active_tails,
             "fhYear": fh, "fcYear": fc,
         })
     return out
@@ -450,7 +458,7 @@ def summary():
     if ds is None:
         return {"liveTotal": 0, "neo": 0, "ceo": 0, "atr": 0,
                 "spareNeoEngines": 0, "spareCeoEngines": 0, "spareAtrEngines": 0, "spareApus": 0}
-    active = _active_today(ds.get("Fleet"))
+    active = _active_today(ds.get("Fleet"), _as_of_ts(ds))
     cat = {"NEO": 0, "CEO": 0, "ATR": 0}
     if active is not None and not active.empty and "Aircraft_Family" in active.columns:
         for fam, cnt in active["Aircraft_Family"].value_counts().items():
