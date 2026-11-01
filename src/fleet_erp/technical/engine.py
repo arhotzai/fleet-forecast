@@ -368,11 +368,11 @@ def _apply_resets(live, reset_now, hard_children, soft_children,
                 yrs = e.get("soft_years")
                 if yrs is not None and not np.isnan(yrs):
                     months = int(round(yrs * 12))
-                    reason = f"Performed earlier with {src_name} SV — soft link (within {months} months of its limit)"
+                    reason = f"Performed earlier with {src_name} — soft link (within {months} months of its limit)"
                 else:
-                    reason = f"Performed earlier with {src_name} SV — soft link"
+                    reason = f"Performed earlier with {src_name} — soft link"
             else:
-                reason = f"Performed earlier with {src_name} SV — hard link"
+                reason = f"Performed earlier with {src_name} — hard link"
         out_events.append({
             "Date": date, "Tail": tail or "SPARE", "Position": position,
             "Unit_ID": unit_id, "Unit_Kind": kind, "Unit_Type": unit_type,

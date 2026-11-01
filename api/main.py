@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-from fleet_erp.ingestion.loader import load          # noqa: E402
+from fleet_erp.ingestion.loader import load, Dataset  # noqa: E402
 from fleet_erp.technical import engine               # noqa: E402
 from fleet_erp.export.excel import build_workbook     # noqa: E402
 
@@ -33,7 +33,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"])
 
 # single in-memory dataset (Phase 1, no DB). None until a workbook is uploaded.
-STATE: dict = {"ds": None, "proj": None, "airline": ""}
+STATE: dict = {"ds": None, "ds0": None, "proj": None, "airline": ""}
 _SAMPLE = os.path.join(_ROOT, "assets", "SAMPLE_fleet_database.xlsx")
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -207,6 +207,13 @@ def _aircraft_list(ds) -> list[dict]:
     return out
 
 
+def _clean_type(t) -> str:
+    """Landing-gear units are stored as '<family> LG' internally to separate their
+    events; show just the aircraft type in the UI (kind=Landing Gear distinguishes)."""
+    s = _str(t)
+    return s[:-3].rstrip() if s.endswith(" LG") else s
+
+
 def _status_rows(ds) -> list[dict]:
     us = ds.get("Unit_Status")
     comp = ds.get("Components")
@@ -257,7 +264,7 @@ def _status_rows(ds) -> list[dict]:
         pct = round(consumed / hln * 100, 1) if (pd.notna(hln) and hln and pd.notna(consumed)) else None
         rows.append({
             "id": f"{uid}|{evid}", "tail": _str(tail), "unit": uid,
-            "kind": _kind(kind), "type": utype, "pos": _POSL.get(pos, pos),
+            "kind": _kind(kind), "type": _clean_type(utype), "pos": _POSL.get(pos, pos),
             "event": evid, "driver": _driver(drv),
             "sinceLast": _num(consumed), "cyclesSinceSv": _num(cyc),
             "limit": _num(hln), "remaining": _num(remaining), "pctLimit": _num(pct),
@@ -542,10 +549,50 @@ async def data_upload(file: UploadFile = File(...)):
         proj = engine.run(ds)
     except Exception as e:
         raise HTTPException(422, f"Could not process workbook: {e}")
-    STATE["ds"], STATE["proj"] = ds, proj
+    STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
+
+
+@app.post("/config/as-of")
+async def set_as_of(body: dict):
+    """Re-run the whole fleet 'as of' a chosen date: advance every unit's readings
+    from the file's snapshot to that date, then re-project. Driven by the data."""
+    base = STATE.get("ds0")
+    if base is None:
+        raise HTTPException(400, "Upload a workbook first.")
+    new = pd.to_datetime((body or {}).get("date"), errors="coerce")
+    if pd.isna(new):
+        raise HTTPException(400, "Invalid date.")
+    orig = pd.to_datetime(_snapshot_date(base), errors="coerce")
+    months = 0.0 if pd.isna(orig) else (
+        (new.year - orig.year) * 12 + (new.month - orig.month) + (new.day - orig.day) / 30.4375)
+    sheets = {k: v.copy() for k, v in base.sheets.items()}
+    util = sheets.get("Utilization")
+    rate = {}
+    if util is not None and not util.empty:
+        for _, r in util.iterrows():
+            rate[str(r["Unit_ID"])] = (_num(r.get("Annual_FH")) or 0.0, _num(r.get("Annual_FC")) or 0.0)
+    us = sheets.get("Unit_Status")
+    if us is not None and not us.empty and months:
+        for col in ("SLSV_Months", "SLSV_FH", "SLSV_FC", "TSN", "CSN"):
+            if col in us.columns:
+                us[col] = pd.to_numeric(us[col], errors="coerce").astype(float)
+        for i, r in us.iterrows():
+            afh, afc = rate.get(str(r["Unit_ID"]), (0.0, 0.0))
+            for col, inc in (("SLSV_Months", months), ("SLSV_FH", afh * months / 12.0),
+                             ("SLSV_FC", afc * months / 12.0), ("TSN", afh * months / 12.0),
+                             ("CSN", afc * months / 12.0)):
+                v = pd.to_numeric(r.get(col), errors="coerce")
+                if pd.notna(v):
+                    us.at[i, col] = max(0.0, v + inc)
+    cfg = sheets.get("Config")
+    if cfg is not None and "Setting" in cfg.columns:
+        cfg.loc[cfg["Setting"].astype(str) == "As_Of_Date", "Value"] = new.strftime("%Y-%m-%d")
+    ds = Dataset(sheets=sheets, issues=list(base.issues))
+    STATE["ds"], STATE["proj"] = ds, engine.run(ds)
+    return {"date": new.strftime("%Y-%m-%d"), "airline": STATE["airline"], "loaded": True}
 
 
 @app.put("/data/sheets")
