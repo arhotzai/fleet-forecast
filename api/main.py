@@ -518,6 +518,39 @@ def fleet_utilisation():
     return _utilisation(ds) if ds is not None else []
 
 
+@app.get("/fleet/utilisation/units")
+def utilisation_units():
+    """Per-unit utilisation assumptions (every tail / engine / APU / propeller) for drill-down."""
+    ds = _ds()
+    if ds is None:
+        return []
+    util = ds.get("Utilization")
+    if util is None or util.empty:
+        return []
+    comp = ds.get("Components")
+    fleet = ds.get("Fleet")
+    ctype = dict(zip(comp["Component_ID"].astype(str), comp["Unit_Type"].astype(str))) \
+        if comp is not None and not comp.empty else {}
+    ftype = dict(zip(fleet["Tail"].astype(str), fleet["Aircraft_Family"].astype(str))) \
+        if fleet is not None and not fleet.empty else {}
+    tails = {str(t) for t in fleet["Tail"]} if fleet is not None and not fleet.empty else set()
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    out = []
+    for _, r in util.iterrows():
+        uid = _str(r.get("Unit_ID"))
+        out.append({
+            "unitId": uid, "kind": _kind(r.get("Unit_Kind")),
+            "type": _clean_type(ctype.get(uid) or ftype.get(uid) or ""),
+            "onTail": uid if uid in tails else _str(comp.loc[comp["Component_ID"].astype(str) == uid, "Installed_On_Tail"].iloc[0]) if (comp is not None and not comp.empty and (comp["Component_ID"].astype(str) == uid).any()) else "",
+            "annualFh": _num(r.get("Annual_FH")), "annualFc": _num(r.get("Annual_FC")),
+            "ratio": _num(r.get("FH_FC_Ratio")), "evolutionPct": _num(r.get("Annual_Evolution_Pct")),
+            "minFh": _num(r.get("Min_Annual_FH")), "maxFh": _num(r.get("Max_Annual_FH")),
+            "aogLeadInMonths": _num(r.get("AOG_Lead_In_Months")),
+            "monthly": [_num(r.get(m)) for m in months],
+        })
+    return out
+
+
 @app.get("/data/sheets")
 def data_sheets():
     ds = _ds()
