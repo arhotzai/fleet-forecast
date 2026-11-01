@@ -574,13 +574,30 @@ def _ai_context(ds) -> str:
     evs = _events(ds)
     overdue = sorted([r for r in rows if r["remaining"] is not None and r["remaining"] < 0],
                      key=lambda r: r["remaining"])
-    upcoming = sorted(evs, key=lambda e: e["dueDate"])[:25]
+    upcoming = sorted(evs, key=lambda e: e["dueDate"])[:30]
     lines = [f"SNAPSHOT DATE: {_snapshot_date(ds)}",
              f"FLEET SUMMARY: {json.dumps(summary())}",
-             f"COUNTS: {len(rows)} unit×event rows, {len(overdue)} overdue, {len(evs)} projected events.",
-             "TOP OVERDUE ITEMS (tail · unit · type · event · remaining · %used):"]
+             f"COUNTS: {len(rows)} unit×event rows, {len(overdue)} overdue, {len(evs)} projected events."]
+    # full aircraft roster with installed engines + APU (answers 'engines of tail X')
+    fleet = ds.get("Fleet")
+    if fleet is not None and not fleet.empty:
+        lines.append("AIRCRAFT ROSTER (tail · type · family · LH engine · RH engine · APU · lessor):")
+        for _, r in fleet.iterrows():
+            lines.append(f"  {_str(r.get('Tail'))} · {_str(r.get('Aircraft_Family'))} · "
+                         f"{_big_cat(r.get('Aircraft_Family'))} · LH:{_str(r.get('LHENG_ESN'))} · "
+                         f"RH:{_str(r.get('RHENG_ESN'))} · APU:{_str(r.get('APU_SN'))} · {_str(r.get('Owner'))}")
+    # spare engines
+    comp = ds.get("Components")
+    if comp is not None and not comp.empty and "Installed_On_Tail" in comp.columns:
+        free = (comp["Installed_On_Tail"].isna()
+                | comp["Installed_On_Tail"].astype(str).str.strip().isin(["", "nan", "None"]))
+        sp = comp[(comp["Unit_Kind"] == "ENGINE") & free]
+        if not sp.empty:
+            lines.append(f"SPARE ENGINES ({len(sp)}): " +
+                         ", ".join(f"{_str(r['Component_ID'])}({_str(r['Unit_Type'])})" for _, r in sp.iterrows()))
+    lines.append("ALL OVERDUE ITEMS (tail · unit · type · event · remaining · %used):")
     lines += [f"  {r['tail']} · {r['unit']} · {r['type']} · {r['event']} · {r['remaining']} · {r['pctLimit']}%"
-              for r in overdue[:20]]
+              for r in overdue[:40]]
     lines.append("NEXT UPCOMING SHOP VISITS (date · tail · unit · event · reason):")
     lines += [f"  {e['dueDate']} · {e['tail']} · {e['unit']} · {e['event']} · {e['reason']}" for e in upcoming]
     return "\n".join(lines)
