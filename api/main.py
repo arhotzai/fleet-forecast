@@ -361,23 +361,38 @@ def _events(ds) -> list[dict]:
 def _llps(ds) -> list[dict]:
     reg = ds.get("LLP_Registry")
     comp = ds.get("Components")
+    proj = STATE["proj"]
     if reg is None or reg.empty:
         return []
     etype = {}
     if comp is not None and not comp.empty:
         etype = dict(zip(comp["Component_ID"].astype(str), comp["Unit_Type"].astype(str)))
+    # projected SV date + reason per LLP come from the PROJECTION (same as Streamlit),
+    # keyed by (engine serial, LLP SN) via the LLP_<SN> event id — NOT the file's Expected_Date.
+    llp_proj = {}
+    if proj is not None and proj.events is not None and not proj.events.empty:
+        pe = proj.events[proj.events["Trigger"] == "LLP_REPLACEMENT"].sort_values("Date")
+        for _, e in pe.iterrows():
+            eid = str(e.get("Event_ID"))
+            sn = eid[4:] if eid.startswith("LLP_") else eid
+            key = (str(e.get("Unit_ID")), sn)
+            if key not in llp_proj:   # keep the SOONEST (next-due) replacement, not later cycles
+                llp_proj[key] = (_date(e.get("Date")), _reason(e.get("Trigger")), _str(e.get("Reason")))
     out = []
     for i, r in reg.reset_index(drop=True).iterrows():
         uid = _str(r.get("Unit_ID"))
+        sn = _str(r.get("LLP_SN"))
         lim = _num(r.get("Limit_Cycles"))
         togo = _num(r.get("ToGo"))
+        pdate, prs, prtext = llp_proj.get((uid, sn), ("", "llp", ""))
         out.append({
             "id": str(i), "unit": uid, "engineType": etype.get(uid, ""),
             "part": _str(r.get("Description")), "pn": _str(r.get("LLP_PN")),
-            "sn": _str(r.get("LLP_SN")), "limit": lim,
+            "sn": sn, "limit": lim,
             "csn": (lim - togo) if (isinstance(lim, (int, float)) and isinstance(togo, (int, float))) else _num(r.get("SLSV")),
             "remaining": togo,
-            "projectedDate": _date(r.get("Expected_Date")),   # when this LLP is projected to come due
+            "projectedDate": pdate,                 # from the projection (correct), not Expected_Date
+            "reason": prs, "reasonText": prtext or "Reached its cycle limit",
         })
     return out
 
