@@ -371,12 +371,14 @@ def _llps(ds) -> list[dict]:
     # keyed by (engine serial, LLP SN) via the LLP_<SN> event id — NOT the file's Expected_Date.
     llp_proj = {}
     if proj is not None and proj.events is not None and not proj.events.empty:
-        pe = proj.events[proj.events["Trigger"] == "LLP_REPLACEMENT"].sort_values("Date")
+        ev = proj.events
+        # an LLP's next SV can be a standalone replacement OR bundled (soft/hard link) with the
+        # engine SV — so match ALL LLP_<sn> events, not just Trigger==LLP_REPLACEMENT.
+        pe = ev[ev["Event_ID"].astype(str).str.startswith("LLP_")].sort_values("Date")
         for _, e in pe.iterrows():
-            eid = str(e.get("Event_ID"))
-            sn = eid[4:] if eid.startswith("LLP_") else eid
+            sn = str(e.get("Event_ID"))[4:]
             key = (str(e.get("Unit_ID")), sn)
-            if key not in llp_proj:   # keep the SOONEST (next-due) replacement, not later cycles
+            if key not in llp_proj:   # keep the SOONEST (next-due) occurrence
                 llp_proj[key] = (_date(e.get("Date")), _reason(e.get("Trigger")), _str(e.get("Reason")))
     out = []
     for i, r in reg.reset_index(drop=True).iterrows():
