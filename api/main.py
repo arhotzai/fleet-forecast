@@ -305,13 +305,18 @@ def _power_units(ds) -> list[dict]:
         agg = us.groupby(us["Unit_ID"].astype(str)).agg(**acols).to_dict("index")
     lc = llp.groupby(llp["Unit_ID"].astype(str)).size().to_dict() if (llp is not None and not llp.empty) else {}
     tfam = _tail_family(ds)
-    # projected shop visits per unit
+    # projected shop visits per unit (sorted) + the soonest = "next projected event"
     sv = {}
+    nxt = {}
     if proj is not None and proj.events is not None and not proj.events.empty:
-        for _, e in proj.events.iterrows():
-            sv.setdefault(str(e["Unit_ID"]), []).append({
+        for _, e in proj.events.sort_values("Date").iterrows():
+            uid = str(e["Unit_ID"])
+            sv.setdefault(uid, []).append({
                 "date": _date(e.get("Date")), "workscope": _str(e.get("Event")),
+                "reason": _reason(e.get("Trigger")), "reasonText": _str(e.get("Reason")),
                 "tsn": 0, "csn": 0, "vendor": ""})
+            if uid not in nxt:
+                nxt[uid] = (_date(e.get("Date")), _str(e.get("Event")), _str(e.get("Reason")))
     out = []
     for _, r in pw.iterrows():
         cid = str(r["Component_ID"])
@@ -327,6 +332,9 @@ def _power_units(ds) -> list[dict]:
             "tsn": _num(a.get("tsn")), "tsnLsv": _num(a.get("tsnLsv")),
             "csn": _num(a.get("csn")), "lastSvDate": _date(a.get("lastSvDate")),
             "workscope": _str(a.get("workscope")), "llpCount": int(lc.get(cid, 0)),
+            "nextDate": nxt.get(cid, ("", "", ""))[0],
+            "nextEvent": nxt.get(cid, ("", "", ""))[1],
+            "nextReason": nxt.get(cid, ("", "", ""))[2],
             "shopVisits": sv.get(cid, []),
         })
     return out
