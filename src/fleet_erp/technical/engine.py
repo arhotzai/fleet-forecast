@@ -395,6 +395,11 @@ def _apply_resets(live, reset_now, hard_children, soft_children,
 def run(ds: Dataset) -> Projection:
     as_of = _as_of(ds)
     fleet = ds.get("Fleet")
+    # the Fleet sheet may also hold leased spare-engine / APU rows (rent tracking);
+    # only actual aircraft rows are projected as airframes.
+    if fleet is not None and not fleet.empty and "Asset_Kind" in fleet.columns:
+        fleet = fleet[fleet["Asset_Kind"].astype(str).isin(["Aircraft", "", "nan", "None"])
+                      | fleet["Asset_Kind"].isna()]
     units = ds.get("Components")
 
     # horizon end = latest in-service date across the fleet. Period 1 runs to

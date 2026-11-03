@@ -141,8 +141,16 @@ def _is_spare(tail) -> bool:
 
 
 # ───────────────────── derived lookups (per request) ─────────────────────
+def _aircraft_rows(ds):
+    """Fleet rows that are actual aircraft (the sheet also holds leased spare-engine/APU rent rows)."""
+    fl = ds.get("Fleet")
+    if fl is None or fl.empty or "Asset_Kind" not in fl.columns:
+        return fl
+    return fl[fl["Asset_Kind"].astype(str).isin(["Aircraft", "", "nan", "None"]) | fl["Asset_Kind"].isna()]
+
+
 def _tail_family(ds) -> dict:
-    fleet = ds.get("Fleet")
+    fleet = _aircraft_rows(ds)
     out = {}
     if fleet is not None and not fleet.empty:
         for _, r in fleet.iterrows():
@@ -195,7 +203,7 @@ def _active_today(fl, ref=None):
 
 # ───────────────────────── builders ─────────────────────────
 def _aircraft_list(ds, ref=None) -> list[dict]:
-    fleet = ds.get("Fleet")
+    fleet = _aircraft_rows(ds)
     if fleet is None or fleet.empty:
         return []
     util = _util_by_tail(ds)
@@ -220,11 +228,14 @@ def _aircraft_list(ds, ref=None) -> list[dict]:
 
 
 def _rent(ds) -> dict:
-    lz = ds.get("Leases")
-    if lz is None or lz.empty:
+    fl = ds.get("Fleet")
+    if fl is None or fl.empty or "Monthly_Rent_USD" not in fl.columns:
         return {}
     from collections import defaultdict
-    rows = lz.to_dict("records")
+    rows = fl.to_dict("records")
+
+    def kind_of(r):
+        return _str(r.get("Asset_Kind")) or "Aircraft"
 
     def usd(r):
         return _num(r.get("Monthly_Rent_USD")) or 0
@@ -237,8 +248,8 @@ def _rent(ds) -> dict:
             d[k][1] += usd(r)
         return d
     by_owner = agg(lambda r: _str(r.get("Owner")))
-    by_kind = agg(lambda r: _str(r.get("Asset_Kind")))
-    by_type = agg(lambda r: _str(r.get("Type")) if _str(r.get("Asset_Kind")) == "Aircraft" else None)
+    by_kind = agg(kind_of)
+    by_type = agg(lambda r: _str(r.get("Aircraft_Family")) if kind_of(r) == "Aircraft" else None)
     by_type.pop(None, None)
     return {
         "totalMonthlyUsd": round(sum(usd(r) for r in rows)),
@@ -527,7 +538,7 @@ def summary():
     if ds is None:
         return {"liveTotal": 0, "neo": 0, "ceo": 0, "atr": 0,
                 "spareNeoEngines": 0, "spareCeoEngines": 0, "spareAtrEngines": 0, "spareApus": 0}
-    active = _active_today(ds.get("Fleet"), _as_of_ts(ds))
+    active = _active_today(_aircraft_rows(ds), _as_of_ts(ds))
     cat = {"NEO": 0, "CEO": 0, "ATR": 0}
     if active is not None and not active.empty and "Aircraft_Family" in active.columns:
         for fam, cnt in active["Aircraft_Family"].value_counts().items():
