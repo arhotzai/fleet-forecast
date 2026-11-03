@@ -212,9 +212,44 @@ def _aircraft_list(ds, ref=None) -> list[dict]:
             "leasedOwned": _str(r.get("Leased_Owned")),
             "deliveryDate": _date(r.get("Delivery_Date")),
             "active": tail in active_tails,
+            "monthlyRent": _num(r.get("Monthly_Rent_USD")),
+            "rentType": _str(r.get("Rent_Type")),
             "fhYear": fh, "fcYear": fc,
         })
     return out
+
+
+def _rent(ds) -> dict:
+    lz = ds.get("Leases")
+    if lz is None or lz.empty:
+        return {}
+    from collections import defaultdict
+    rows = lz.to_dict("records")
+
+    def usd(r):
+        return _num(r.get("Monthly_Rent_USD")) or 0
+
+    def agg(keyfn):
+        d = defaultdict(lambda: [0, 0.0])
+        for r in rows:
+            k = keyfn(r)
+            d[k][0] += 1
+            d[k][1] += usd(r)
+        return d
+    by_owner = agg(lambda r: _str(r.get("Owner")))
+    by_kind = agg(lambda r: _str(r.get("Asset_Kind")))
+    by_type = agg(lambda r: _str(r.get("Type")) if _str(r.get("Asset_Kind")) == "Aircraft" else None)
+    by_type.pop(None, None)
+    return {
+        "totalMonthlyUsd": round(sum(usd(r) for r in rows)),
+        "totalMonthlyEur": round(sum(_num(r.get("Monthly_Rent_EUR")) or 0 for r in rows)),
+        "byOwner": [{"owner": o, "count": c, "monthlyUsd": round(v)}
+                    for o, (c, v) in sorted(by_owner.items(), key=lambda x: -x[1][1])],
+        "byKind": [{"kind": k, "count": c, "monthlyUsd": round(v)}
+                   for k, (c, v) in sorted(by_kind.items(), key=lambda x: -x[1][1])],
+        "byType": [{"type": t, "count": c, "monthlyUsd": round(v)}
+                   for t, (c, v) in sorted(by_type.items(), key=lambda x: -x[1][1])],
+    }
 
 
 def _clean_type(t) -> str:
@@ -553,6 +588,12 @@ def powerplant_units():
 def fleet_utilisation():
     ds = _ds()
     return _utilisation(ds) if ds is not None else []
+
+
+@app.get("/fleet/rent")
+def fleet_rent():
+    ds = _ds()
+    return _rent(ds) if ds is not None else {}
 
 
 @app.get("/fleet/utilisation/units")
