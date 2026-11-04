@@ -307,6 +307,8 @@ def _aircraft_list(ds, ref=None) -> list[dict]:
             "owner": _str(r.get("Operator")), "lessor": _str(r.get("Owner")),
             "leasedOwned": _str(r.get("Leased_Owned")),
             "deliveryDate": _date(r.get("Delivery_Date")),
+            "redeliveryDate": _date(r.get("Redelivery_Date")),
+            "extensionDate": _date(r.get("Extension_Date")),
             "active": tail in active_tails,
             "monthlyRent": _num(r.get("Monthly_Rent_USD")),
             "rentType": _str(r.get("Rent_Type")),
