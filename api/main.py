@@ -11,15 +11,22 @@ everything, exactly like the Streamlit app.
 """
 from __future__ import annotations
 
+import contextvars
 import io
 import os
 import sys
+import time
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+
+try:
+    import httpx
+except ImportError:          # httpx ships with fastapi/uvicorn[standard] but guard anyway
+    httpx = None
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
@@ -28,12 +35,93 @@ from fleet_erp.ingestion.loader import load, Dataset  # noqa: E402
 from fleet_erp.technical import engine               # noqa: E402
 from fleet_erp.export.excel import build_workbook     # noqa: E402
 
-app = FastAPI(title="Fleet Forecast API", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
-                   allow_methods=["*"], allow_headers=["*"])
+# ───────────────────────── auth + per-user isolation ─────────────────────────
+# Each signed-in user gets their OWN in-memory dataset: nobody sees anyone else's
+# uploaded fleet. Requests must carry the caller's Supabase access token
+# (Authorization: Bearer …); we verify it against Supabase and key the data by user id.
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL", "https://ypspdmzjfzjvcnihzhxy.supabase.co").rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get(
+    "SUPABASE_ANON_KEY", "sb_publishable_Qv5AxM4xUTlqg7BgKlxC4w_QOfCShGr")
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "https://fleet-forecast.vercel.app,http://localhost:8080").split(",")
 
-# single in-memory dataset (Phase 1, no DB). None until a workbook is uploaded.
-STATE: dict = {"ds": None, "ds0": None, "proj": None, "airline": ""}
+# public endpoints that don't need a session
+_PUBLIC_PATHS = {"/", "/health", "/sample", "/docs", "/redoc", "/openapi.json"}
+
+_current_user: contextvars.ContextVar = contextvars.ContextVar("current_user", default=None)
+SESSIONS: dict[str, dict] = {}                 # user_id -> their dataset bucket
+_TOKEN_CACHE: dict[str, tuple] = {}            # token -> (user_id, expiry_ts)
+
+
+def _blank_session() -> dict:
+    return {"ds": None, "ds0": None, "proj": None, "airline": ""}
+
+
+class _UserState:
+    """Proxy so existing STATE[...] code transparently reads/writes the CURRENT
+    user's bucket (resolved from the request's verified token)."""
+    def _bucket(self) -> dict:
+        uid = _current_user.get() or "__anon__"
+        return SESSIONS.setdefault(uid, _blank_session())
+
+    def __getitem__(self, k):
+        return self._bucket()[k]
+
+    def __setitem__(self, k, v):
+        self._bucket()[k] = v
+
+    def get(self, k, default=None):
+        return self._bucket().get(k, default)
+
+
+STATE = _UserState()
+
+
+async def _verify_token(token: str):
+    """Return the Supabase user id for a valid access token, else None. Cached briefly."""
+    now = time.time()
+    hit = _TOKEN_CACHE.get(token)
+    if hit and hit[1] > now:
+        return hit[0]
+    if httpx is None:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY})
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    uid = (r.json() or {}).get("id")
+    if uid:
+        _TOKEN_CACHE[token] = (uid, now + 120)   # 2-min cache to avoid a round-trip per call
+    return uid
+
+
+async def require_user(request: Request):
+    """Global dependency: verify the caller on protected routes and pin their user id
+    for this request so STATE resolves to their private dataset."""
+    path = request.url.path
+    if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/docs"):
+        return
+    auth = request.headers.get("authorization") or ""
+    token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    uid = await _verify_token(token)
+    if not uid:
+        raise HTTPException(401, "Invalid or expired session")
+    _current_user.set(uid)
+
+
+app = FastAPI(title="Fleet Forecast API", version="1.0",
+              dependencies=[Depends(require_user)])
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
+                   allow_methods=["*"], allow_headers=["*"])
 _SAMPLE = os.path.join(_ROOT, "assets", "SAMPLE_fleet_database.xlsx")
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # last-uploaded workbook, cached so a backend restart doesn't lose the session (gitignored)
@@ -699,26 +787,13 @@ async def data_upload(file: UploadFile = File(...)):
     STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
-    try:   # cache so a backend restart restores the session
-        with open(_CACHE, "wb") as _c:
-            _c.write(raw)
-    except OSError:
-        pass
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
 
 
 def _restore_session():
-    """On startup, reload the last-uploaded workbook so a restart keeps the data."""
-    if STATE["ds"] is not None or not os.path.exists(_CACHE):
-        return
-    try:
-        raw = open(_CACHE, "rb").read()
-        ds = load(raw)
-        STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, engine.run(ds)
-        fleet = ds.get("Fleet")
-        STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
-    except Exception:
-        pass
+    """No-op: data is now per-user and in-memory only (isolation). Nothing to restore
+    on startup — each user uploads their own workbook, invisible to others."""
+    return
 
 
 @app.put("/data/sheets")
