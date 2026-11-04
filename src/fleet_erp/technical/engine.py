@@ -161,6 +161,10 @@ def _events_by_type(ds: Dataset) -> dict[str, list[dict]]:
             "hard_limit": _num(r.get("Hard_Limit")),
             # soft-bundle threshold expressed in YEARS of remaining life
             "soft_years": _num(r.get("Soft_Threshold_Years")),
+            # min life (YEARS) that must remain at lease redelivery; if less than
+            # this remains at hand-back, a redelivery-condition SV is triggered.
+            # Blank = no redelivery requirement for this event.
+            "redeliv_min": _num(r.get("Redelivery_Min_Life_Years")),
         })
     return out
 
@@ -206,9 +210,17 @@ def _initial_status(ds: Dataset) -> dict[tuple[str, str], dict]:
         return out
     for _, r in us.iterrows():
         key = (str(r.get("Unit_ID")), str(r.get("Event_ID")))
+        # FC distance since the last SV is DERIVED from the counters (CSN now −
+        # CSN at last SV), not stored — the real driver for HSI/CSI/RGB is FH and
+        # the FC value is only a counter. Fall back to SLSV_FC if counters absent.
+        csn, csn_lsv = _num(r.get("CSN")), _num(r.get("CSN_At_LSV"))
+        if not np.isnan(csn) and not np.isnan(csn_lsv):
+            fc = max(0.0, csn - csn_lsv)
+        else:
+            fc = _num(r.get("SLSV_FC"), 0.0)
         out[key] = {
             "fh": _num(r.get("SLSV_FH"), 0.0),
-            "fc": _num(r.get("SLSV_FC"), 0.0),
+            "fc": fc,
             "months": _num(r.get("SLSV_Months"), 0.0),
         }
     return out
@@ -241,7 +253,7 @@ def _within_soft(e, annual_fh_i: float, annual_fc_i: float) -> bool:
 
 def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
                   init_status, llp_rows, links, llp_rule, dates,
-                  out_events, out_status, series_out):
+                  out_events, out_status, series_out, redeliv_date=None):
     n = len(dates)
     # month 0 is the as-of baseline (snapshot already reflects it): no increment.
     fh = (util.fh.copy() if util else np.zeros(n))
@@ -294,7 +306,16 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
 
     series = {eid: np.zeros(n) for eid in live}   # monthly SLSV snapshot per event
 
-    for i, date in enumerate(dates):
+    # Per-component horizon: project only up to the component's redelivery date
+    # (lease hand-back), not the global horizon. last_i = last in-service month.
+    last_i = n - 1
+    if redeliv_date is not None and n:
+        rd = pd.Timestamp(redeliv_date)
+        last_i = int(np.searchsorted([d.value for d in dates], rd.value, side="right")) - 1
+        last_i = min(last_i, n - 1)
+
+    for i in range(max(last_i, -1) + 1):
+        date = dates[i]
         reset_now: set[str] = set()
         for eid, e in live.items():
             d = e["driver"]
@@ -318,7 +339,36 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
                           annual_fh[i], annual_fc[i], date, dates,
                           unit_id, unit_type, kind, tail, position, out_events)
 
+        # Redelivery condition: at the hand-back month, any event that would be
+        # returned with less than its required min-life gets a shop visit so it
+        # meets the lease return condition. These cascade HARD links only — never
+        # soft links (we don't pull extra work forward just to redeliver).
+        if redeliv_date is not None and i == last_i:
+            redeliv_now: set[str] = set()
+            for eid, e in live.items():
+                if e["is_llp"]:
+                    continue
+                rm, lim = e.get("redeliv_min"), e["hard_limit"]
+                if rm is None or np.isnan(rm) or rm <= 0 or np.isnan(lim) or lim <= 0:
+                    continue
+                remaining = lim - e["slsv"]
+                d = e["driver"]
+                required = (rm * annual_fh[i] if d == "FH"
+                            else rm * annual_fc[i] if d == "FC" else rm * 12.0)
+                if remaining < required:
+                    redeliv_now.add(eid)
+            if redeliv_now:
+                _apply_resets(live, redeliv_now, hard_children, soft_children,
+                              annual_fh[i], annual_fc[i], date, dates,
+                              unit_id, unit_type, kind, tail, position, out_events,
+                              allow_soft=False, anchor_kind="REDELIVERY")
+
         # record the end-of-month snapshot for every event
+        for eid, e in live.items():
+            series[eid][i] = e["slsv"]
+
+    # after redelivery the component has left the fleet — freeze its last state
+    for i in range(max(last_i, -1) + 1, n):
         for eid, e in live.items():
             series[eid][i] = e["slsv"]
 
@@ -339,8 +389,10 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
 
 def _apply_resets(live, reset_now, hard_children, soft_children,
                   annual_fh_i, annual_fc_i, date, dates,
-                  unit_id, unit_type, kind, tail, position, out_events):
-    # cascade HARD children (always) and SOFT children (if within threshold)
+                  unit_id, unit_type, kind, tail, position, out_events,
+                  allow_soft=True, anchor_kind="LIMIT"):
+    # cascade HARD children (always) and SOFT children (if within threshold, and
+    # only when allowed — redelivery-condition SVs never bundle soft links).
     # cascaded: child -> (trigger, source_event_id)
     cascaded: dict[str, tuple[str, str]] = {}
     frontier = list(reset_now)
@@ -350,17 +402,23 @@ def _apply_resets(live, reset_now, hard_children, soft_children,
             if child not in reset_now and child not in cascaded:
                 cascaded[child] = ("HARD_LINK", p)
                 frontier.append(child)
-        for child in soft_children.get(p, []):
-            if (child not in reset_now and child not in cascaded
-                    and _within_soft(live[child], annual_fh_i, annual_fc_i)):
-                cascaded[child] = ("SOFT_BUNDLE", p)
-                frontier.append(child)
+        if allow_soft:
+            for child in soft_children.get(p, []):
+                if (child not in reset_now and child not in cascaded
+                        and _within_soft(live[child], annual_fh_i, annual_fc_i)):
+                    cascaded[child] = ("SOFT_BUNDLE", p)
+                    frontier.append(child)
 
     for eid in list(reset_now) + list(cascaded):
         e = live[eid]
         if eid in reset_now:
-            trigger = "LLP_REPLACEMENT" if e["is_llp"] else "LIMIT"
-            reason = "Reached its cycle limit" if e["is_llp"] else "Reached its limit"
+            if anchor_kind == "REDELIVERY":
+                trigger = "REDELIVERY"
+                reason = "Redelivery condition — insufficient life remaining at hand-back"
+            elif e["is_llp"]:
+                trigger, reason = "LLP_REPLACEMENT", "Reached its cycle limit"
+            else:
+                trigger, reason = "LIMIT", "Reached its limit"
         else:
             trigger, src = cascaded[eid]
             src_name = live[src]["event_name"] if src in live else src
@@ -401,6 +459,29 @@ def run(ds: Dataset) -> Projection:
         fleet = fleet[fleet["Asset_Kind"].astype(str).isin(["Aircraft", "", "nan", "None"])
                       | fleet["Asset_Kind"].isna()]
     units = ds.get("Components")
+
+    # per-component redelivery date (Extension_Date if the lease is extended, else
+    # Redelivery_Date). Installed engines/APU inherit their aircraft's date; spare
+    # Fleet rows are keyed by serial. Each unit projects only up to this date.
+    redeliv_by_unit: dict[str, pd.Timestamp] = {}
+    _fleet_all = ds.get("Fleet")
+    if _fleet_all is not None and not _fleet_all.empty:
+        for _, _r in _fleet_all.iterrows():
+            _rd = pd.to_datetime(_r.get("Extension_Date"), errors="coerce")
+            if pd.isna(_rd):
+                _rd = pd.to_datetime(_r.get("Redelivery_Date"), errors="coerce")
+            if pd.isna(_rd):
+                continue
+            _key = str(_r.get("Tail") or "").strip()
+            if str(_r.get("Asset_Kind") or "Aircraft") == "Aircraft":
+                if _key:
+                    redeliv_by_unit[_key] = _rd
+                for _col in ("LHENG_ESN", "RHENG_ESN", "APU_SN"):
+                    _v = _r.get(_col)
+                    if pd.notna(_v) and str(_v).strip():
+                        redeliv_by_unit[str(_v).strip()] = _rd
+            elif _key:
+                redeliv_by_unit[_key] = _rd
 
     # horizon end = latest in-service date across the fleet. Period 1 runs to
     # Redelivery; if a lease is extended (Extension_Date), Period 2 runs to that.
@@ -468,7 +549,8 @@ def run(ds: Dataset) -> Projection:
             _project_unit(tail, fam, "AIRFRAME", tail, "AIRFRAME",
                           events_by_type.get((fam, "AIRFRAME"), []), util_map.get(tail),
                           init_status, [], links_by_type.get(fam, []), None,
-                          dates, out_events, out_status, out_series)
+                          dates, out_events, out_status, out_series,
+                          redeliv_date=redeliv_by_unit.get(tail))
             # engines + APU
             for col, pos in (("LHENG_ESN", "LHENG"), ("RHENG_ESN", "RHENG"), ("APU_SN", "APU")):
                 uid = r.get(col)
@@ -482,7 +564,8 @@ def run(ds: Dataset) -> Projection:
                               events_by_type.get((ut, kind), []), util_map.get(uid),
                               init_status, llp_by_unit.get(uid, []),
                               links_by_type.get(ut, []), llp_rules.get(ut),
-                              dates, out_events, out_status, out_series)
+                              dates, out_events, out_status, out_series,
+                              redeliv_date=redeliv_by_unit.get(uid, redeliv_by_unit.get(tail)))
 
     # 1b) installed propellers (fly with the aircraft; LH/RH)
     if not units.empty:
@@ -498,7 +581,8 @@ def run(ds: Dataset) -> Projection:
             _project_unit(uid, ut, "PROPELLER", tail, str(r.get("Position") or ""),
                           events_by_type.get((ut, "PROPELLER"), []), util_map.get(uid),
                           init_status, [], links_by_type.get(ut, []), None,
-                          dates, out_events, out_status, out_series)
+                          dates, out_events, out_status, out_series,
+                          redeliv_date=redeliv_by_unit.get(uid, redeliv_by_unit.get(tail)))
 
     # 1c) installed landing gear (belongs to the tail; nose + MLG LH/RH)
     if not units.empty:
@@ -514,7 +598,8 @@ def run(ds: Dataset) -> Projection:
             _project_unit(uid, ut, "LANDING_GEAR", tail, str(r.get("Position") or "LG"),
                           events_by_type.get((ut, "LANDING_GEAR"), []), util_map.get(tail),
                           init_status, [], links_by_type.get(ut, []), None,
-                          dates, out_events, out_status, out_series)
+                          dates, out_events, out_status, out_series,
+                          redeliv_date=redeliv_by_unit.get(uid, redeliv_by_unit.get(tail)))
 
     # 2) spares (units in the Units sheet not installed on any aircraft)
     if not units.empty:
@@ -531,7 +616,8 @@ def run(ds: Dataset) -> Projection:
                           events_by_type.get((ut, kind), []), util_map.get(uid),
                           init_status, llp_by_unit.get(uid, []),
                           links_by_type.get(ut, []), llp_rules.get(ut),
-                          dates, out_events, out_status, out_series)
+                          dates, out_events, out_status, out_series,
+                          redeliv_date=redeliv_by_unit.get(uid))
 
     events_df = pd.DataFrame(out_events)
     if not events_df.empty:
