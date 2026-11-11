@@ -161,10 +161,12 @@ def _events_by_type(ds: Dataset) -> dict[str, list[dict]]:
             "hard_limit": _num(r.get("Hard_Limit")),
             # soft-bundle threshold expressed in YEARS of remaining life
             "soft_years": _num(r.get("Soft_Threshold_Years")),
-            # min life (YEARS) that must remain at lease redelivery; if less than
-            # this remains at hand-back, a redelivery-condition SV is triggered.
-            # Blank = no redelivery requirement for this event.
-            "redeliv_min": _num(r.get("Redelivery_Min_Life_Years")),
+            # Contractual remaining life required at lease redelivery, expressed in the
+            # event's OWN driver unit (FH, FC or calendar months) — NOT years. If at the
+            # redelivery date the remaining life is below this, a redelivery-condition SV
+            # is triggered. Blank = no redelivery requirement for this event.
+            "redeliv_min": _num(r.get("Redelivery_Min_Remaining",
+                                      r.get("Redelivery_Min_Life_Years"))),
         })
     return out
 
@@ -222,9 +224,11 @@ def _initial_status(ds: Dataset) -> dict[tuple[str, str], dict]:
             "fh": _num(r.get("SLSV_FH"), 0.0),
             "fc": fc,
             "months": _num(r.get("SLSV_Months"), 0.0),
-            # per-unit redelivery min-life (YEARS). Overrides the per-type Events value
-            # when present — a lease's return condition can differ per installed unit.
-            "redeliv_min": _num(r.get("Redelivery_Min_Life_Years")),
+            # per-unit redelivery min-remaining (in the event's driver unit: FH / FC /
+            # months). Overrides the per-type Events value — a lease's return condition
+            # can differ per installed unit.
+            "redeliv_min": _num(r.get("Redelivery_Min_Remaining",
+                                      r.get("Redelivery_Min_Life_Years"))),
         }
     return out
 
@@ -358,11 +362,10 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
                 rm, lim = e.get("redeliv_min"), e["hard_limit"]
                 if rm is None or np.isnan(rm) or rm <= 0 or np.isnan(lim) or lim <= 0:
                     continue
+                # remaining life is already in the event's driver unit; the contractual
+                # minimum is given in the same unit — compare directly, no conversion.
                 remaining = lim - e["slsv"]
-                d = e["driver"]
-                required = (rm * annual_fh[i] if d == "FH"
-                            else rm * annual_fc[i] if d == "FC" else rm * 12.0)
-                if remaining < required:
+                if remaining < rm:
                     redeliv_now.add(eid)
             if redeliv_now:
                 _apply_resets(live, redeliv_now, hard_children, soft_children,
