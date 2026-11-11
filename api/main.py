@@ -781,6 +781,52 @@ def utilisation_units():
     return out
 
 
+def _historic_util(ds) -> dict:
+    """Actual monthly flying history (airframe) joined with each tail's family, for the
+    historical-utilisation charts. 0-months (aircraft not in the fleet) are dropped."""
+    h = ds.get("Historic_Utilization")
+    if h is None or h.empty:
+        return {"rows": [], "families": [], "years": [], "tails": []}
+    fleet = ds.get("Fleet")
+    fam, typ = {}, {}
+    pref: dict[str, list] = {}
+    if fleet is not None and not fleet.empty:
+        from collections import Counter
+        pc: dict[str, Counter] = {}
+        for t, f in zip(fleet["Tail"].astype(str), fleet["Aircraft_Family"]):
+            fam[t] = _big_cat(f)
+            typ[t] = _str(f)
+            pc.setdefault(t[:5], Counter())[(_big_cat(f), _str(f))] += 1   # e.g. 'SX-DG' -> CEO
+        pref = {k: c.most_common(1)[0][0] for k, c in pc.items()}
+    rows = []
+    for r in h.itertuples(index=False):
+        fh, fc = _num(getattr(r, "FHs", 0)), _num(getattr(r, "FCs", 0))
+        if (fh or 0) <= 0 and (fc or 0) <= 0:
+            continue
+        tail = str(getattr(r, "Tail"))
+        # departed aircraft aren't in the current Fleet — infer family from the reg prefix
+        g, ty = fam.get(tail, ""), typ.get(tail, "")
+        if not g and tail[:5] in pref:
+            g, ty = pref[tail[:5]]
+        y, m = _num(getattr(r, "Year")), _num(getattr(r, "Month"))
+        rows.append({"tail": tail, "family": g, "type": ty,
+                     "year": int(y) if y else None, "month": int(m) if m else None,
+                     "fh": fh, "fc": fc})
+    return {
+        "rows": rows,
+        "families": sorted({r["family"] for r in rows if r["family"]}),
+        "years": sorted({r["year"] for r in rows if r["year"]}),
+        "tails": sorted({r["tail"] for r in rows}),
+    }
+
+
+@app.get("/utilisation/historic")
+def utilisation_historic():
+    """Actual monthly FH/FC history per aircraft (airframe) for trend/seasonality charts."""
+    ds = _ds()
+    return _historic_util(ds) if ds is not None else {"rows": [], "families": [], "years": [], "tails": []}
+
+
 @app.get("/data/sheets")
 def data_sheets():
     ds = _ds()
