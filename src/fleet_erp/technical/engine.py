@@ -212,21 +212,20 @@ def _initial_status(ds: Dataset) -> dict[tuple[str, str], dict]:
         return out
     for _, r in us.iterrows():
         key = (str(r.get("Unit_ID")), str(r.get("Event_ID")))
-        # FC distance since the last SV is DERIVED from the counters (CSN now −
-        # CSN at last SV), not stored — the real driver for HSI/CSI/RGB is FH and
-        # the FC value is only a counter. Fall back to SLSV_FC if counters absent.
+        # FC-since-SV counter, DERIVED from the counters (CSN now − CSN at last SV).
         csn, csn_lsv = _num(r.get("CSN")), _num(r.get("CSN_At_LSV"))
-        if not np.isnan(csn) and not np.isnan(csn_lsv):
-            fc = max(0.0, csn - csn_lsv)
-        else:
-            fc = _num(r.get("SLSV_FC"), 0.0)
+        fc_counter = (max(0.0, csn - csn_lsv)
+                      if not np.isnan(csn) and not np.isnan(csn_lsv) else np.nan)
+        drv = str(r.get("Driver") or "").strip().upper() or None
         out[key] = {
-            "fh": _num(r.get("SLSV_FH"), 0.0),
-            "fc": fc,
-            "months": _num(r.get("SLSV_Months"), 0.0),
-            # per-unit redelivery min-remaining (in the event's driver unit: FH / FC /
-            # months). Overrides the per-type Events value — a lease's return condition
-            # can differ per installed unit.
+            # per-component driver (authoritative; the database is the master).
+            "driver": drv,
+            # raw SLSV per unit — NaN preserved so the engine can tell blank from zero.
+            "fh": _num(r.get("SLSV_FH")),
+            "fc": _num(r.get("SLSV_FC")),
+            "months": _num(r.get("SLSV_Months")),
+            "fc_counter": fc_counter,
+            # per-unit redelivery min-remaining, in the event's driver unit (FH/FC/months).
             "redeliv_min": _num(r.get("Redelivery_Min_Remaining",
                                       r.get("Redelivery_Min_Life_Years"))),
         }
@@ -278,10 +277,28 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
     live: dict[str, dict] = {}
     for e in events:
         st = init_status.get((str(unit_id), e["event_id"]), {})
-        driver = e["driver"]
-        start = st.get("months", 0.0) if driver.startswith("CALENDAR") else (
-            st.get("fh", 0.0) if driver == "FH" else st.get("fc", 0.0))
-        ev = {**e, "slsv": start, "is_llp": False}
+        # FLEXIBILITY: the per-component Driver in Unit_Status wins over the per-type
+        # Events rule, so the database fully controls behaviour per unit×event.
+        driver = st.get("driver") or e["driver"]
+        if driver.startswith("CALENDAR"):
+            start = st.get("months")
+        elif driver == "FH":
+            start = st.get("fh")
+        else:  # FC — prefer the counter (CSN − CSN_At_LSV), else the stored value
+            start = st.get("fc_counter")
+            if start is None or np.isnan(start):
+                start = st.get("fc")
+        # tolerant pickup: if the driver's column is blank, use any present SLSV value
+        # (so a column/driver placement mistake self-corrects instead of silently failing).
+        if start is None or np.isnan(start):
+            for alt in ("fh", "fc", "months"):
+                v = st.get(alt)
+                if v is not None and not np.isnan(v):
+                    start = v
+                    break
+        if start is None or np.isnan(start):
+            start = 0.0
+        ev = {**e, "driver": driver, "slsv": start, "is_llp": False}
         rm = st.get("redeliv_min")
         if rm is not None and not np.isnan(rm):     # per-unit override of the event default
             ev["redeliv_min"] = rm
