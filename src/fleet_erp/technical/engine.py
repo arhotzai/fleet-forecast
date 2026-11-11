@@ -222,6 +222,9 @@ def _initial_status(ds: Dataset) -> dict[tuple[str, str], dict]:
             "fh": _num(r.get("SLSV_FH"), 0.0),
             "fc": fc,
             "months": _num(r.get("SLSV_Months"), 0.0),
+            # per-unit redelivery min-life (YEARS). Overrides the per-type Events value
+            # when present — a lease's return condition can differ per installed unit.
+            "redeliv_min": _num(r.get("Redelivery_Min_Life_Years")),
         }
     return out
 
@@ -274,7 +277,11 @@ def _project_unit(unit_id, unit_type, kind, tail, position, events, util,
         driver = e["driver"]
         start = st.get("months", 0.0) if driver.startswith("CALENDAR") else (
             st.get("fh", 0.0) if driver == "FH" else st.get("fc", 0.0))
-        live[e["event_id"]] = {**e, "slsv": start, "is_llp": False}
+        ev = {**e, "slsv": start, "is_llp": False}
+        rm = st.get("redeliv_min")
+        if rm is not None and not np.isnan(rm):     # per-unit override of the event default
+            ev["redeliv_min"] = rm
+        live[e["event_id"]] = ev
 
     llp_ids: list[str] = []
     for llp in llp_rows:
