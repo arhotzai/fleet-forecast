@@ -51,8 +51,43 @@ ALLOWED_ORIGINS = os.environ.get(
 _PUBLIC_PATHS = {"/", "/health", "/sample", "/docs", "/redoc", "/openapi.json"}
 
 _current_user: contextvars.ContextVar = contextvars.ContextVar("current_user", default=None)
+_current_token: contextvars.ContextVar = contextvars.ContextVar("current_token", default=None)
 SESSIONS: dict[str, dict] = {}                 # user_id -> their dataset bucket
 _TOKEN_CACHE: dict[str, tuple] = {}            # token -> (user_id, expiry_ts)
+
+# ── Supabase Storage: each user's uploaded workbook persists here (per-user folder,
+# protected by row-level security), so it survives backend restarts, redeploys and
+# idle-sleep. The backend forwards the caller's own token — no service key needed.
+STORAGE_BUCKET = os.environ.get("STORAGE_BUCKET", "fleet-data")
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _storage_url(uid: str) -> str:
+    return f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{uid}/database.xlsx"
+
+
+async def _storage_put(token: str, uid: str, data: bytes) -> None:
+    if httpx is None or not token:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(_storage_url(uid), content=data, headers={
+                "Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY,
+                "Content-Type": _XLSX_MIME, "x-upsert": "true"})
+    except Exception:
+        pass
+
+
+async def _storage_get(token: str, uid: str) -> bytes | None:
+    if httpx is None or not token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(_storage_url(uid), headers={
+                "Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY})
+        return r.content if r.status_code == 200 else None
+    except Exception:
+        return None
 
 
 def _blank_session() -> dict:
@@ -116,6 +151,22 @@ async def require_user(request: Request):
     if not uid:
         raise HTTPException(401, "Invalid or expired session")
     _current_user.set(uid)
+    _current_token.set(token)
+    # auto-restore this user's workbook from storage if their in-memory data is empty
+    # (first request after a restart/redeploy/sleep). One attempt per process lifetime.
+    bucket = SESSIONS.setdefault(uid, _blank_session())
+    if bucket["ds"] is None and not bucket.get("restored"):
+        bucket["restored"] = True
+        data = await _storage_get(token, uid)
+        if data:
+            try:
+                ds = load(data)
+                fleet = ds.get("Fleet")
+                bucket["ds"], bucket["ds0"], bucket["proj"] = ds, ds, engine.run(ds)
+                bucket["airline"] = (_str(fleet.iloc[0]["Operator"]) if (fleet is not None
+                                     and not fleet.empty and "Operator" in fleet.columns) else "")
+            except Exception:
+                pass
 
 
 app = FastAPI(title="Fleet Forecast API", version="1.0",
@@ -789,6 +840,10 @@ async def data_upload(file: UploadFile = File(...)):
     STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
+    # persist to the user's private storage folder so it survives restarts/redeploys/sleep
+    uid, token = _current_user.get(), _current_token.get()
+    if uid and token:
+        await _storage_put(token, uid, raw)
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
 
 
@@ -807,6 +862,9 @@ async def put_sheets(sheets: list[dict]):
     except Exception as e:
         raise HTTPException(422, f"Could not apply edits: {e}")
     STATE["ds"], STATE["proj"] = ds, proj
+    uid, token = _current_user.get(), _current_token.get()
+    if uid and token:
+        await _storage_put(token, uid, raw)   # persist edits too
     return {"ok": True}
 
 
