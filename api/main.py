@@ -152,21 +152,11 @@ async def require_user(request: Request):
         raise HTTPException(401, "Invalid or expired session")
     _current_user.set(uid)
     _current_token.set(token)
-    # auto-restore this user's workbook from storage if their in-memory data is empty
-    # (first request after a restart/redeploy/sleep). One attempt per process lifetime.
-    bucket = SESSIONS.setdefault(uid, _blank_session())
-    if bucket["ds"] is None and not bucket.get("restored"):
-        bucket["restored"] = True
-        data = await _storage_get(token, uid)
-        if data:
-            try:
-                ds = load(data)
-                fleet = ds.get("Fleet")
-                bucket["ds"], bucket["ds0"], bucket["proj"] = ds, ds, engine.run(ds)
-                bucket["airline"] = (_str(fleet.iloc[0]["Operator"]) if (fleet is not None
-                                     and not fleet.empty and "Operator" in fleet.columns) else "")
-            except Exception:
-                pass
+    # SAFETY: the app must start EMPTY. Data is never auto-restored on page load /
+    # refresh — a projection runs only when the user explicitly uploads a workbook.
+    # (The uploaded file is still saved to the user's private storage so a future
+    # explicit "restore last upload" action could use it, but nothing auto-loads.)
+    SESSIONS.setdefault(uid, _blank_session())
 
 
 app = FastAPI(title="Fleet Forecast API", version="1.0",
@@ -459,8 +449,12 @@ def _status_rows(ds) -> list[dict]:
         hln = pd.to_numeric(hl, errors="coerce")
         remaining = (hln - consumed) if (pd.notna(hln) and pd.notna(consumed)) else None
         pct = round(consumed / hln * 100, 1) if (pd.notna(hln) and hln and pd.notna(consumed)) else None
+        # spares have no tail — label them "Spare Engine" / "Spare APU" instead of "nan"
+        tail_s = _str(tail)
+        if not tail_s or tail_s.lower() == "nan":
+            tail_s = f"Spare {_kind(kind)}"
         rows.append({
-            "id": f"{uid}|{evid}", "tail": _str(tail), "unit": uid,
+            "id": f"{uid}|{evid}", "tail": tail_s, "unit": uid,
             "kind": _kind(kind), "type": _clean_type(utype), "pos": _POSL.get(pos, pos),
             "event": evid, "driver": _driver(drv),
             "sinceLast": _num(consumed), "cyclesSinceSv": _num(cyc),
