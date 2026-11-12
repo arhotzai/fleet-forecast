@@ -880,10 +880,8 @@ async def data_upload(file: UploadFile = File(...)):
     STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
-    # persist to the user's private storage folder so it survives restarts/redeploys/sleep
-    uid, token = _current_user.get(), _current_token.get()
-    if uid and token:
-        await _storage_put(token, uid, raw)
+    # SAFETY: nothing is persisted. Data lives only in memory for the active session and
+    # is cleared on open/sign-out (see /data/clear). The uploaded file is never stored.
     return {"date": _snapshot_date(ds), "airline": STATE["airline"], "loaded": True}
 
 
@@ -902,10 +900,24 @@ async def put_sheets(sheets: list[dict]):
     except Exception as e:
         raise HTTPException(422, f"Could not apply edits: {e}")
     STATE["ds"], STATE["proj"] = ds, proj
-    uid, token = _current_user.get(), _current_token.get()
-    if uid and token:
-        await _storage_put(token, uid, raw)   # persist edits too
     return {"ok": True}
+
+
+@app.post("/data/clear")
+async def data_clear():
+    """Clear the signed-in user's in-memory data and delete any stored copy. Called by
+    the app on open and on sign-out so the app is ALWAYS empty until a fresh upload."""
+    uid, token = _current_user.get(), _current_token.get()
+    if uid:
+        SESSIONS[uid] = _blank_session()
+        try:                       # best-effort cleanup of any previously-stored file
+            if token and httpx is not None:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    await client.delete(_storage_url(uid), headers={
+                        "Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY})
+        except Exception:
+            pass
+    return {"ok": True, "loaded": False}
 
 
 _AI_SYSTEM = (
