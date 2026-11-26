@@ -34,6 +34,8 @@ sys.path.insert(0, os.path.join(_ROOT, "src"))
 from fleet_erp.ingestion.loader import load, Dataset  # noqa: E402
 from fleet_erp.technical import engine               # noqa: E402
 from fleet_erp.export.excel import build_workbook     # noqa: E402
+from fleet_erp import market as mkt                    # noqa: E402
+from fleet_erp.market import excel as mkt_excel       # noqa: E402
 
 # ───────────────────────── auth + per-user isolation ─────────────────────────
 # Each signed-in user gets their OWN in-memory dataset: nobody sees anyone else's
@@ -91,7 +93,10 @@ async def _storage_get(token: str, uid: str) -> bytes | None:
 
 
 def _blank_session() -> dict:
-    return {"ds": None, "ds0": None, "proj": None, "airline": ""}
+    # market / market_prev: uploaded IBA exports (Market Intelligence); market_cfg: the
+    # Settings tab of the uploaded fleet database — all in memory only, wiped by /data/clear.
+    return {"ds": None, "ds0": None, "proj": None, "airline": "",
+            "market": None, "market_prev": None, "market_cfg": None}
 
 
 class _UserState:
@@ -905,6 +910,7 @@ async def data_upload(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(422, f"Could not process workbook: {e}")
     STATE["ds"], STATE["ds0"], STATE["proj"] = ds, ds, proj
+    _mkt_set_settings(raw)
     fleet = ds.get("Fleet")
     STATE["airline"] = _str(fleet.iloc[0]["Operator"]) if (fleet is not None and not fleet.empty and "Operator" in fleet.columns) else ""
     # SAFETY: nothing is persisted. Data lives only in memory for the active session and
@@ -927,6 +933,7 @@ async def put_sheets(sheets: list[dict]):
     except Exception as e:
         raise HTTPException(422, f"Could not apply edits: {e}")
     STATE["ds"], STATE["proj"] = ds, proj
+    _mkt_set_settings(raw)
     return {"ok": True}
 
 
@@ -1155,6 +1162,356 @@ def fleet_report():
         return {"report": report.strip(), "snapshot": _snapshot_date(ds), "airline": STATE["airline"]}
     except Exception as e:
         raise HTTPException(502, f"Report failed: {e}")
+
+
+# ───────────────────────── market intelligence ─────────────────────────
+# The IBA asset export is uploaded here and kept ONLY in the caller's in-memory session
+# (cleared by /data/clear on open and sign-out). The one stored artefact is the Settings
+# mapping file (assets/market_settings.json). The airline relationship columns are derived
+# on the fly from the loaded fleet database — never written anywhere.
+_MKT_CFG: dict | None = None
+
+
+def _mkt_default() -> dict:
+    global _MKT_CFG
+    if _MKT_CFG is None:
+        _MKT_CFG = mkt.load_settings()
+    return _MKT_CFG
+
+
+def _mkt_cfg() -> dict:
+    """The Settings tab of the uploaded fleet database; the bundled default until one is loaded."""
+    return STATE.get("market_cfg") or _mkt_default()
+
+
+def _mkt_set_settings(raw: bytes) -> None:
+    """Take the Settings tab from a fleet-database workbook (if it has one) and re-map any
+    IBA export already loaded, so the upload order doesn't matter."""
+    try:
+        cfg = mkt.settings_from_workbook(raw)
+    except Exception:
+        cfg = None
+    STATE["market_cfg"] = cfg
+    use = cfg or _mkt_default()
+    for slot in ("market", "market_prev"):
+        m = STATE.get(slot)
+        if m:
+            m["df"] = mkt.apply_settings(m["df"], use)
+
+
+def _mkt_df():
+    m = STATE.get("market")
+    if not m:
+        raise HTTPException(404, "No market data loaded. Upload an asset report first.")
+    return m["df"]
+
+
+def _mkt_meta() -> dict:
+    cur, prev = STATE.get("market"), STATE.get("market_prev")
+    ds = _ds()
+    return {
+        "loaded": bool(cur),
+        "file": cur["file"] if cur else "", "at": cur["at"] if cur else "",
+        "rows": cur["rows"] if cur else 0,
+        "previous": {"file": prev["file"], "at": prev["at"], "rows": prev["rows"]} if prev else None,
+        "fleetLoaded": ds is not None, "airline": STATE.get("airline", "") if ds is not None else "",
+        "settingsSource": "database" if STATE.get("market_cfg") else "default",
+    }
+
+
+def _mkt_relationship(focus: str = ""):
+    """Airline relationship for the league table: an operator picked from the export,
+    else the loaded fleet database. Computed per request, never stored."""
+    cfg = _mkt_cfg()
+    if focus:
+        return mkt.relationship_from_operator(_mkt_df(), cfg, focus)
+    ds = _ds()
+    if ds is None:
+        return None
+    return mkt.relationship_from_fleet(_aircraft_list(ds), cfg, STATE.get("airline", ""))
+
+
+def _mkt_report(focus: str = "") -> dict:
+    df, cfg = _mkt_df(), _mkt_cfg()
+    prev = STATE.get("market_prev")
+    rel = _mkt_relationship(focus)
+    rep = mkt.report(df, cfg, prev["df"] if prev else None, rel)
+    rep["fit"] = mkt.fleet_fit(df, cfg, rep, rel) if rel else None
+    rep["meta"] = _mkt_meta()
+    rep["focus"] = focus
+    return rep
+
+
+@app.post("/market/upload")
+def market_upload(file: UploadFile = File(...), slot: str = "current"):
+    """Load an IBA asset export into the session. slot=previous holds an older export
+    for the year-on-year columns."""
+    if slot not in ("current", "previous"):
+        raise HTTPException(400, "slot must be 'current' or 'previous'.")
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "Empty file.")
+    try:
+        df = mkt.parse_iba(raw, _mkt_cfg())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(422, f"Could not read the export: {e}")
+    STATE["market" if slot == "current" else "market_prev"] = {
+        "df": df, "file": file.filename or "Asset report", "rows": int(df["n"].sum()),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    return _mkt_meta()
+
+
+@app.delete("/market/upload")
+def market_remove(slot: str = "previous"):
+    if slot == "current":
+        STATE["market"], STATE["market_prev"] = None, None
+    else:
+        STATE["market_prev"] = None
+    return _mkt_meta()
+
+
+@app.get("/market/status")
+def market_status():
+    return _mkt_meta()
+
+
+@app.get("/market/report")
+def market_report(focus: str = ""):
+    return _mkt_report(focus.strip())
+
+
+@app.get("/market/operators")
+def market_operators(q: str = "", limit: int = 40):
+    return mkt.operators(_mkt_df(), q.strip(), max(1, min(limit, 200)))
+
+
+@app.get("/market/operator")
+def market_operator(name: str):
+    out = mkt.operator_view(_mkt_df(), _mkt_cfg(), name.strip())
+    if out is None:
+        raise HTTPException(404, "Operator not found in the export.")
+    return out
+
+
+@app.get("/market/lessor")
+def market_lessor(name: str):
+    out = mkt.lessor_view(_mkt_df(), _mkt_cfg(), name.strip())
+    if out is None:
+        raise HTTPException(404, "Lessor not found in the export.")
+    return out
+
+
+@app.get("/market/settings")
+def market_settings():
+    """The Settings mappings in use (read-only)."""
+    cfg = _mkt_cfg()
+    groups: dict[str, list[str]] = {}
+    for manager, group in cfg["managers"].items():
+        groups.setdefault(group, []).append(manager)
+    return {
+        "lessors": [{"group": g, "funding": cfg["_funding"].get(g.casefold(), ""), "managers": sorted(ms)}
+                    for g, ms in sorted(groups.items(), key=lambda kv: kv[0].casefold())],
+        "models": [{"model": k, "family": v} for k, v in cfg["models"].items()],
+        "statuses": [{"status": k, "mapped": v} for k, v in cfg["statuses"].items()],
+        "families": cfg["familyOrder"],
+        "source": "database" if STATE.get("market_cfg") else "default",
+    }
+
+
+@app.get("/market/export")
+def market_export(focus: str = ""):
+    rep = _mkt_report(focus.strip())
+    data = mkt_excel.build(rep, rep["fit"], rep["meta"])
+    return StreamingResponse(io.BytesIO(data), media_type=_XLSX, headers={
+        "Content-Disposition": "attachment; filename=LESSORS_UPDATE_market_intelligence.xlsx",
+        "Access-Control-Expose-Headers": "Content-Disposition"})
+
+
+_MKT_SYSTEM = (
+    "You are a senior aircraft-leasing market analyst briefing the fleet and finance management "
+    "of an airline. You receive aggregated tables built from an asset report export (refer to it only as 'the asset report'; never name the data provider): aircraft counted "
+    "by lessor group (the manager, not necessarily the owner), status (Active = in service, stored "
+    "or parked; On Order = firm orders, LOIs and MOUs) and aircraft family, mapped with the airline's "
+    "own Settings. When present, an `airline` block gives the airline's current fleet by type, its "
+    "lessor relationships, lease expiries and a computed sourcing shortlist.\n\n"
+    "Write real market intelligence, not a restatement of the tables: who dominates and why it "
+    "matters, where the orderbook (future supply and negotiating leverage) sits, how concentrated "
+    "the market and its capital sources are, which lessors are growing or shrinking, and — when the "
+    "airline block is present — how the airline's fleet composition maps onto that market: which "
+    "lessors can realistically fill its gaps (replacing older types with their successors, covering "
+    "lease expiries, growth), where it is over-exposed to one lessor, and which large lessors with "
+    "relevant aircraft or orders it has no relationship with yet.\n\n"
+    "Rules: every figure you cite must come from the data provided — never invent lease rates, "
+    "values, delivery dates, deals or news. You may add widely known industry context (for example "
+    "who owns a lessor) but phrase it as context, not as data. The family 'Other' groups every type "
+    "outside the Settings families (for example 737s and most widebodies), so do not read it as one "
+    "type. 'idle' means stored or parked airframes — the nearest-term supply. Be specific, name "
+    "lessors, quantify, and keep each point tight enough for a management slide.")
+
+_MKT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string", "description": "One sentence: the single most important takeaway."},
+        "summary": {"type": "string", "description": "3-4 sentence executive summary."},
+        "insights": {
+            "type": "array",
+            "description": "6-9 distinct insights, most important first.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": [
+                        "Lessor landscape", "Orderbook", "Capital & ownership",
+                        "Fleet fit", "Risk", "Opportunity"]},
+                    "title": {"type": "string"},
+                    "metric": {"type": "string", "description": "The key figure, e.g. '497 on order'."},
+                    "body": {"type": "string", "description": "2-4 sentences with the supporting numbers."},
+                },
+                "required": ["category", "title", "metric", "body"],
+                "additionalProperties": False,
+            },
+        },
+        "gapPlan": {
+            "type": "array",
+            "description": "How the airline's fleet gaps could be filled. Empty when no airline data was provided.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "need": {"type": "string", "description": "The fleet need, e.g. 'Replace A320ceo with A320neo'."},
+                    "rationale": {"type": "string"},
+                    "candidates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "lessor": {"type": "string"},
+                                "relationship": {"type": "string", "enum": ["Existing", "New"]},
+                                "why": {"type": "string"},
+                            },
+                            "required": ["lessor", "relationship", "why"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["need", "rationale", "candidates"],
+                "additionalProperties": False,
+            },
+        },
+        "watchlist": {
+            "type": "array",
+            "description": "Lessors worth watching and why (growth, shrinkage, concentration, idle aircraft).",
+            "items": {
+                "type": "object",
+                "properties": {"lessor": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["lessor", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "actions": {"type": "array", "items": {"type": "string"},
+                    "description": "3-6 concrete next steps for the fleet team."},
+    },
+    "required": ["headline", "summary", "insights", "gapPlan", "watchlist", "actions"],
+    "additionalProperties": False,
+}
+
+
+def _mkt_context(rep: dict) -> dict:
+    def slim(r: dict) -> dict:
+        out = {"lessor": r["name"], "funding": r["funding"], "active": r["activeTotal"],
+               "orders": r["ordersTotal"], "ordersPctOfFleet": r["backlog"], "avgAgeYears": r["avgAge"],
+               "idle": r["idle"], "customers": r["customers"],
+               "activeByFamily": r["active"], "ordersByFamily": r["orders"]}
+        if rep["hasPrev"]:
+            out["previousActive"], out["delta"] = r["prevTotal"], r["delta"]
+        if r["relTotal"]:
+            out["aircraftWithAirline"] = r["rel"]
+        return out
+
+    lessors = rep["lessors"]
+    by_orders = [r for r in sorted(lessors, key=lambda r: -r["ordersTotal"]) if r["ordersTotal"]]
+    ctx = {
+        "market": rep["kpis"],
+        "families": rep["familyTable"],
+        "lessorsBySize": [slim(r) for r in lessors[:30]],
+        "orderbookRanking": [{"lessor": r["name"], "orders": r["ordersTotal"], "active": r["activeTotal"],
+                              "ordersByFamily": r["orders"]} for r in by_orders[:15]],
+        "capitalOrigin": rep["origins"],
+        "listedLessorsTotal": {"active": rep["lessorTotal"]["activeTotal"], "orders": rep["lessorTotal"]["ordersTotal"]},
+        "thirdPartyManagersNotInSettings": rep["quality"]["unmappedManagers"][:10],
+    }
+    if rep["hasPrev"]:
+        moved = sorted((r for r in lessors if r["delta"]), key=lambda r: -abs(r["delta"]))[:12]
+        ctx["biggestMovesVsPrevious"] = [{"lessor": r["name"], "previous": r["prevTotal"],
+                                          "now": r["activeTotal"], "delta": r["delta"]} for r in moved]
+    fit = rep.get("fit")
+    if fit:
+        rel = rep.get("relationship") or {}
+        ctx["airline"] = {
+            "name": fit["airline"], "dataSource": "fleet database" if fit["source"] == "fleet" else "asset report",
+            "fleetByType": rel.get("composition", {}), "aircraft": fit["total"],
+            "owned": fit["ownedTotal"], "leased": fit["leasedTotal"],
+            "lessorConcentration": fit["concentration"],
+            "leaseExpiriesByYear": fit["expiries"],
+            "targetFamilies": fit["targets"],
+            "familyPosition": [{k: v for k, v in f.items() if k != "topLessors"} | {"topLessors": f["topLessors"][:6]}
+                               for f in fit["families"]],
+            "sourcingShortlist": [{k: s[k] for k in ("lessor", "funding", "existing", "relTotal", "active",
+                                                     "orders", "idle")} for s in fit["shortlist"][:15]],
+        }
+    return ctx
+
+
+@app.post("/market/insights")
+def market_insights(body: dict | None = None):
+    """Claude-written market intelligence over the generated tables and, when a fleet
+    database (or a focus operator) is available, the airline's own fleet composition."""
+    rep = _mkt_report(str((body or {}).get("focus", "")).strip())
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(400, "No ANTHROPIC_API_KEY configured on the server.")
+    import json as _json
+    import anthropic
+    import httpx2
+    brief = str((body or {}).get("brief", "")).strip()[:600]
+    prompt = (
+        "Market tables (JSON):\n" + _json.dumps(_mkt_context(rep), separators=(",", ":"), default=str)
+        + ("\n\nManagement asked to focus on: " + brief if brief else "")
+        + ("\n\nNo airline fleet data is loaded: leave gapPlan empty and keep the insights market-wide."
+           if not rep.get("fit") else
+           "\n\nThe airline block is present: make at least three insights about its fleet fit and fill gapPlan."))
+    try:
+        # identity encoding: Anaconda's bundled decompressor is broken for this SDK's HTTP stack
+        client = anthropic.Anthropic(
+            api_key=key, http_client=httpx2.Client(headers={"accept-encoding": "identity"}, timeout=300))
+        with client.beta.messages.stream(
+            model="claude-opus-5-5", max_tokens=16000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high", "format": {"type": "json_schema", "schema": _MKT_SCHEMA}},
+            # a declined request is re-run server-side on Anthropic's recommended fallback model
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            system=_MKT_SYSTEM, messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            msg = stream.get_final_message()
+    except anthropic.RateLimitError:
+        raise HTTPException(429, "The AI service is rate-limited right now — try again in a minute.")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(502, f"AI request failed ({e.status_code}): {e.message}")
+    except anthropic.APIConnectionError:
+        raise HTTPException(502, "Could not reach the AI service.")
+    if msg.stop_reason == "refusal":
+        raise HTTPException(502, "The AI declined this request.")
+    if msg.stop_reason == "max_tokens":
+        raise HTTPException(502, "The AI answer was cut off — try again.")
+    text = next((b.text for b in msg.content if getattr(b, "type", "") == "text"), "")
+    try:
+        out = _json.loads(text)
+    except ValueError:
+        raise HTTPException(502, "The AI returned an unreadable answer — try again.")
+    return {"insights": out, "model": msg.model, "withFleet": bool(rep.get("fit")),
+            "airline": (rep.get("fit") or {}).get("airline", ""),
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
 @app.get("/export/{name}")
