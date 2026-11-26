@@ -748,3 +748,57 @@ def fleet_fit(df: pd.DataFrame, cfg: dict, rep: dict, relationship: dict) -> dic
         },
         "expiries": relationship.get("expiries", []),
     }
+
+
+# ───────────────────────── aircraft-type view ─────────────────────────
+def types(df: pd.DataFrame) -> list[dict]:
+    """Families (Settings) with their models, active + on-order counts — for the type picker."""
+    d = df[df["status2"].isin([ACTIVE, ON_ORDER])]
+    g = d.groupby(["family", "model", "status2"])["n"].sum().unstack(fill_value=0)
+    for c in (ACTIVE, ON_ORDER):
+        if c not in g.columns:
+            g[c] = 0
+    out: dict[str, dict] = {}
+    for (fam, model), r in g.iterrows():
+        if not model:
+            continue
+        f = out.setdefault(fam, {"family": fam, "active": 0, "orders": 0, "models": []})
+        a, o = int(r[ACTIVE]), int(r[ON_ORDER])
+        f["active"] += a
+        f["orders"] += o
+        f["models"].append({"model": model, "active": a, "orders": o})
+    for f in out.values():
+        f["models"].sort(key=lambda m: -(m["active"] + m["orders"]))
+    return sorted(out.values(), key=lambda f: (f["family"] == OTHER, -(f["active"] + f["orders"])))
+
+
+def type_view(df: pd.DataFrame, cfg: dict, family: str, models: list[str] | None = None) -> dict | None:
+    """Everything the type tab filters client-side, for one family: an aggregated cube of
+    lessor x model x status x idle x build year x delivery year (operator-managed and
+    unmapped managers fold into "Other"), the same by operator, and lessor metadata."""
+    d = df[(df["family"].str.casefold() == family.casefold()) & df["status2"].isin([ACTIVE, ON_ORDER])]
+    all_models = sorted(d["model"].unique().tolist())
+    if models:
+        want = {m.casefold() for m in models}
+        d = d[d["model"].str.casefold().isin(want)]
+    if d.empty:
+        return None
+
+    def _yr(v):
+        return None if pd.isna(v) else int(v)
+
+    keys = ["group", "model", "status2", "idle", "year", "delYear"]
+    cube = d.groupby(keys, dropna=False)["n"].sum().reset_index()
+    rows = [{"lessor": r.group, "model": r.model, "status": r.status2, "idle": bool(r.idle),
+             "year": _yr(r.year), "delYear": _yr(r.delYear), "n": int(r.n)} for r in cube.itertuples()]
+    ops = d.groupby(["operator", "group", "model", "status2"])["n"].sum().reset_index()
+    op_rows = [{"operator": r.operator or "(no operator)", "lessor": r.group, "model": r.model,
+                "status": r.status2, "n": int(r.n)} for r in ops.itertuples()]
+    meta = {}
+    for g in d["group"].unique():
+        if g == OTHER:
+            continue
+        full, country, holder = _funding(cfg, g)
+        meta[g] = {"funding": full, "country": country, "shareholder": holder}
+    return {"family": d["family"].iloc[0], "models": all_models,
+            "refYear": _ref_year(df), "cube": rows, "operators": op_rows, "lessors": meta}

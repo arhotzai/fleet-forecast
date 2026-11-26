@@ -1304,6 +1304,21 @@ def market_lessor(name: str):
     return out
 
 
+@app.get("/market/types")
+def market_types():
+    return mkt.types(_mkt_df())
+
+
+@app.get("/market/type")
+def market_type(family: str, models: str = ""):
+    """One family; `models` (|-separated) narrows it server-side — used for the big "Other" family."""
+    picked = [m.strip() for m in models.split("|") if m.strip()]
+    out = mkt.type_view(_mkt_df(), _mkt_cfg(), family.strip(), picked or None)
+    if out is None:
+        raise HTTPException(404, "No aircraft of this type in the asset report.")
+    return out
+
+
 @app.get("/market/settings")
 def market_settings():
     """The Settings mappings in use (read-only)."""
